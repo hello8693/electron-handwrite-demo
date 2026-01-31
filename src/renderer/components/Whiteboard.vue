@@ -174,17 +174,18 @@ function onPointerDown(event) {
   event.preventDefault()
   canvas.setPointerCapture(event.pointerId)
   
-  // Right click or middle click for panning (mouse only)
+  // Right/middle mouse buttons pan; non-mouse pointers skip this path.
   if (event.pointerType === 'mouse' && (event.button === 1 || event.button === 2)) {
     isPanning = true
     lastPanPos = { x: event.clientX, y: event.clientY }
     return
   }
   
-  const isPrimaryDraw = event.pointerType !== 'mouse' || event.button === 0 || event.buttons === 1
+  // Non-mouse inputs use primary contact, while mouse inputs require the left button.
+  const shouldInitiateDrawing = event.pointerType === 'mouse' ? event.button === 0 : event.isPrimary
   
   // Primary contact for drawing
-  if (isPrimaryDraw) {
+  if (shouldInitiateDrawing) {
     const worldPos = viewport.screenToWorld(event.clientX, event.clientY)
     const stroke = strokeManager.startStroke(
       worldPos.x,
