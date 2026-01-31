@@ -13,7 +13,7 @@ Thank you for your interest in contributing to the Electron Handwrite Demo!
    ```bash
    npm run dev
    ```
-   This starts the Electron app with hot-reload enabled.
+   This starts the Electron app with hot-reload enabled and WebGPU support.
 
 3. **Build for Production**
    ```bash
@@ -27,7 +27,46 @@ Thank you for your interest in contributing to the Electron Handwrite Demo!
 
 ## Architecture Overview
 
-### Core Systems
+The application supports **dual rendering modes**:
+
+### WebGPU Mode (Native GPU Acceleration)
+
+#### 1. WebGPU Renderer (`src/renderer/core/WebGPURenderer.js`)
+- GPU-accelerated rendering using wgpu (via WebGPU API)
+- Custom WGSL shaders for stroke rendering
+- Hardware MSAA (4x anti-aliasing)
+- Instanced rendering for high performance
+
+**Key Components:**
+- `WebGPURenderer`: Main GPU renderer class
+- **GPU Pipeline**: Vertex and fragment shaders in WGSL
+- **Storage Buffers**: Stroke data uploaded to GPU memory
+- **Uniform Buffers**: Viewport transformation matrices
+- **Command Encoder**: GPU command batching
+
+**Rendering Pipeline:**
+```
+Stroke Data → Storage Buffer → GPU Memory
+                ↓
+Vertex Shader (WGSL) → Instance Quad Generation
+                ↓
+Fragment Shader → Color Output
+                ↓
+4x MSAA → Render Target
+```
+
+#### 2. GPU Stroke Manager (`src/renderer/core/GPUStrokeManager.js`)
+- Converts stroke data to GPU-friendly format
+- Manages stroke lifecycle for GPU rendering
+- Batches points for efficient GPU upload
+
+**Key Methods:**
+- `startStroke()`: Initialize new GPU stroke
+- `addPoint()`: Add point to current stroke
+- `finishStroke()`: Finalize and upload to GPU
+- `getAllGPUPoints()`: Get flattened GPU point array
+
+### Canvas 2D Mode (CPU Fallback)
 
 #### 1. Tile System (`src/renderer/core/TileSystem.js`)
 - Manages 256x256 pixel canvas tiles
@@ -55,17 +94,109 @@ Thank you for your interest in contributing to the Electron Handwrite Demo!
 **Key Class:**
 - `Viewport`: Viewport transformation and coordinate conversion
 
-### Rendering Pipeline
+### Rendering Pipelines
 
+**WebGPU Pipeline:**
+1. **Input Phase**: Pointer events create/update GPU strokes
+2. **Data Upload**: Stroke data uploaded to GPU storage buffers
+3. **Shader Execution**: WGSL shaders process each point instance
+4. **Rasterization**: GPU rasterizes quads with MSAA
+5. **Output**: Final frame rendered to canvas texture
+
+**Canvas 2D Pipeline:**
 1. **Input Phase**: Pointer events create/update strokes
 2. **Live Layer**: Active strokes render in real-time
 3. **Baking Phase**: Completed strokes bake into tiles
 4. **Tile Cache**: Tiles render only when dirty
 5. **Composite**: Live layer + tile cache → final output
 
+## WebGPU Shader Development
+
+### WGSL Shader Structure
+
+The application uses **WGSL** (WebGPU Shading Language) shaders:
+
+**Vertex Shader:**
+- Generates quad geometry for each stroke point
+- Transforms world coordinates to clip space
+- Passes color to fragment shader
+
+**Fragment Shader:**
+- Outputs final pixel color
+- Can be extended for texture sampling, effects
+
+### Modifying Shaders
+
+To modify the rendering shader in `WebGPURenderer.js`:
+
+```javascript
+const vertexShaderCode = `
+  // Your custom vertex shader
+  @vertex
+  fn vs_main(...) -> VertexOutput {
+    // Custom vertex processing
+  }
+`
+
+const fragmentShaderCode = `
+  // Your custom fragment shader
+  @fragment
+  fn fs_main(...) -> @location(0) vec4<f32> {
+    // Custom fragment processing
+  }
+`
+```
+
+### Adding Compute Shaders
+
+For advanced effects (e.g., stroke smoothing, collision detection):
+
+```javascript
+const computeShaderCode = `
+  @compute @workgroup_size(64)
+  fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    // Process stroke data in parallel
+  }
+`
+
+const computePipeline = device.createComputePipeline({
+  layout: 'auto',
+  compute: {
+    module: device.createShaderModule({ code: computeShaderCode }),
+    entryPoint: 'cs_main'
+  }
+})
+```
+
 ## Extension Points
 
-### Adding New Brush Types
+### Adding New Brush Types (WebGPU)
+
+Modify shader to support different brush types:
+
+```javascript
+// In storage buffer
+struct Stroke {
+  position: vec2<f32>,
+  color: vec4<f32>,
+  width: f32,
+  brushType: u32,  // 0=round, 1=square, 2=texture
+}
+
+// In fragment shader
+@fragment
+fn fs_main(@location(0) color: vec4<f32>, 
+           @location(1) brushType: u32) -> @location(0) vec4<f32> {
+  switch(brushType) {
+    case 0u: { return color; }  // Round brush
+    case 1u: { return squareBrush(color); }
+    case 2u: { return textureBrush(color); }
+    default: { return color; }
+  }
+}
+```
+
+### Adding New Brush Types (Canvas 2D)
 
 Modify `Stroke` class in `StrokeManager.js`:
 
