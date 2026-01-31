@@ -260,6 +260,10 @@ async function initializeRenderer() {
       console.log('✅ WebGPU renderer initialized')
     } catch (err) {
       console.warn('WebGPU not available, falling back to Canvas 2D:', err.message)
+      if (webgpuRenderer) {
+        webgpuRenderer.destroy()
+        webgpuRenderer = null
+      }
       webgpuSupported.value = false
       rendererType.value = 'canvas'
       initializeCanvas2D()
@@ -401,15 +405,17 @@ function onPointerDown(event) {
   
   canvas.setPointerCapture(event.pointerId)
   
-  // Right click or middle click for panning
-  if (event.button === 1 || event.button === 2) {
+  // Right click or middle click for panning (mouse only)
+  if (event.pointerType === 'mouse' && (event.button === 1 || event.button === 2)) {
     isPanning = true
     lastPanPos = { x: event.clientX, y: event.clientY }
     return
   }
   
-  // Left click for drawing (pen only, eraser handled separately)
-  if (event.button === 0 && currentTool.value === 'pen') {
+  const isPrimaryDraw = event.pointerType !== 'mouse' || event.button === 0 || event.buttons === 1
+  
+  // Primary contact for drawing (pen only, eraser handled separately)
+  if (isPrimaryDraw && currentTool.value === 'pen') {
     const worldPos = viewport.screenToWorld(event.clientX, event.clientY)
     
     if (isWebGPU.value) {

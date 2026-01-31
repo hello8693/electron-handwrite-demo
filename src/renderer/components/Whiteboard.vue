@@ -174,15 +174,17 @@ function onPointerDown(event) {
   event.preventDefault()
   canvas.setPointerCapture(event.pointerId)
   
-  // Right click or middle click for panning
-  if (event.button === 1 || event.button === 2) {
+  // Right click or middle click for panning (mouse only)
+  if (event.pointerType === 'mouse' && (event.button === 1 || event.button === 2)) {
     isPanning = true
     lastPanPos = { x: event.clientX, y: event.clientY }
     return
   }
   
-  // Left click for drawing
-  if (event.button === 0) {
+  const isPrimaryDraw = event.pointerType !== 'mouse' || event.button === 0 || event.buttons === 1
+  
+  // Primary contact for drawing
+  if (isPrimaryDraw) {
     const worldPos = viewport.screenToWorld(event.clientX, event.clientY)
     const stroke = strokeManager.startStroke(
       worldPos.x,
