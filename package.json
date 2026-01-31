@@ -1,7 +1,7 @@
 {
   "name": "electron-handwrite-demo",
-  "version": "1.0.0",
-  "description": "Multi-touch handwriting whiteboard demo with tile-based rendering",
+  "version": "2.0.0",
+  "description": "Multi-touch handwriting whiteboard with native GPU rendering (WebGPU/wgpu)",
   "main": "./out/main/index.js",
   "type": "module",
   "scripts": {
@@ -14,7 +14,10 @@
     "electron",
     "whiteboard",
     "handwriting",
-    "canvas",
+    "webgpu",
+    "wgpu",
+    "gpu-acceleration",
+    "native-rendering",
     "multi-touch"
   ],
   "author": "",
@@ -26,5 +29,7 @@
     "vite": "^5.0.0",
     "vue": "^3.4.0"
   },
-  "dependencies": {}
+  "dependencies": {
+    "@webgpu/types": "^0.1.69"
+  }
 }

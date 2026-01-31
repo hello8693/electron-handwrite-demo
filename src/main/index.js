@@ -1,6 +1,12 @@
 import { app, BrowserWindow, Menu } from 'electron'
 import { join } from 'path'
 
+// Enable WebGPU and Vulkan support
+app.commandLine.appendSwitch('enable-features', 'Vulkan,UseSkiaRenderer')
+app.commandLine.appendSwitch('enable-unsafe-webgpu')
+app.commandLine.appendSwitch('use-vulkan')
+app.commandLine.appendSwitch('enable-gpu-rasterization')
+
 let mainWindow = null
 
 function createWindow() {
@@ -10,7 +16,11 @@ function createWindow() {
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      // Enable WebGPU support
+      enableBlinkFeatures: 'WebGPU',
+      // Enable GPU acceleration
+      backgroundThrottling: false
     }
   })
 
@@ -49,12 +59,36 @@ function createWindow() {
       ]
     },
     {
+      label: 'Renderer',
+      submenu: [
+        {
+          label: 'WebGPU Info',
+          click: async () => {
+            const result = await mainWindow.webContents.executeJavaScript(`
+              (async () => {
+                if (!navigator.gpu) return 'WebGPU not available';
+                try {
+                  const adapter = await navigator.gpu.requestAdapter();
+                  if (!adapter) return 'No adapter found';
+                  const info = await adapter.requestAdapterInfo?.() || {};
+                  return \`GPU: \${info.device || 'Unknown'}\\nVendor: \${info.vendor || 'Unknown'}\\nArchitecture: \${info.architecture || 'Unknown'}\`;
+                } catch (e) {
+                  return 'Error: ' + e.message;
+                }
+              })()
+            `)
+            console.log('WebGPU Info:', result)
+          }
+        }
+      ]
+    },
+    {
       label: 'Help',
       submenu: [
         {
           label: 'About',
           click: () => {
-            console.log('Electron Handwrite Demo v1.0.0')
+            console.log('Electron Handwrite Demo v2.0.0 - Native GPU Rendering')
           }
         }
       ]

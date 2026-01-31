@@ -1,11 +1,11 @@
 <template>
   <div class="app-container">
-    <Whiteboard />
+    <WhiteboardGPU />
   </div>
 </template>
 
 <script setup>
-import Whiteboard from './components/Whiteboard.vue'
+import WhiteboardGPU from './components/WhiteboardGPU.vue'
 </script>
 
 <style scoped>
