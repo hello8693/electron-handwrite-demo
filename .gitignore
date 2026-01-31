@@ -6,7 +6,6 @@ pnpm-lock.yaml
 
 # Build output
 dist/
-dist-electron/
 out/
 build/
 

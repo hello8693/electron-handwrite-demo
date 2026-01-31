@@ -2,7 +2,7 @@
   "name": "electron-handwrite-demo",
   "version": "1.0.0",
   "description": "Multi-touch handwriting whiteboard demo with tile-based rendering",
-  "main": "./dist-electron/main.js",
+  "main": "./out/main/index.js",
   "type": "module",
   "scripts": {
     "dev": "electron-vite dev",
