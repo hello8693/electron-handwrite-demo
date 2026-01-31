@@ -116,8 +116,8 @@ export class TileManager {
     const tiles = []
     const startTile = this.worldToTile(viewport.x, viewport.y)
     const endTile = this.worldToTile(
-      viewport.x + viewport.width,
-      viewport.y + viewport.height
+      viewport.x + viewport.width / viewport.scale,
+      viewport.y + viewport.height / viewport.scale
     )
     
     for (let y = startTile.y; y <= endTile.y; y++) {

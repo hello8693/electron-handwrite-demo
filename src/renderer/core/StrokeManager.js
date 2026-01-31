@@ -77,9 +77,16 @@ export class StrokeManager {
 
   startStroke(x, y, color = '#000000', width = 2) {
     const id = `stroke_${this.strokeCounter++}`
-    this.currentStroke = new Stroke(id, color, width)
-    this.currentStroke.addPoint(x, y)
-    return this.currentStroke
+    const stroke = new Stroke(id, color, width)
+    stroke.addPoint(x, y)
+    this.currentStroke = stroke
+    return stroke
+  }
+
+  addPointToStroke(stroke, x, y, pressure = 1.0) {
+    if (!stroke) return null
+    stroke.addPoint(x, y, pressure)
+    return stroke
   }
 
   addPointToCurrentStroke(x, y, pressure = 1.0) {
@@ -88,15 +95,18 @@ export class StrokeManager {
     return this.currentStroke
   }
 
-  finishStroke() {
-    if (!this.currentStroke) return null
+  finishStroke(stroke = null) {
+    const strokeToFinish = stroke || this.currentStroke
+    if (!strokeToFinish) return null
     
-    const stroke = this.currentStroke
-    this.strokes.set(stroke.id, stroke)
-    this.addStrokeToBuckets(stroke)
-    this.currentStroke = null
+    this.strokes.set(strokeToFinish.id, strokeToFinish)
+    this.addStrokeToBuckets(strokeToFinish)
     
-    return stroke
+    if (this.currentStroke === strokeToFinish) {
+      this.currentStroke = null
+    }
+    
+    return strokeToFinish
   }
 
   getStroke(id) {

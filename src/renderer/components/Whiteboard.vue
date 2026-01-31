@@ -210,12 +210,12 @@ function onPointerMove(event) {
   }
   
   const pointerData = activePointers.get(event.pointerId)
-  if (!pointerData) return
+  if (!pointerData || !pointerData.stroke) return
   
   const worldPos = viewport.screenToWorld(event.clientX, event.clientY)
   const pressure = event.pressure || 1.0
   
-  strokeManager.addPointToCurrentStroke(worldPos.x, worldPos.y, pressure)
+  strokeManager.addPointToStroke(pointerData.stroke, worldPos.x, worldPos.y, pressure)
   pointerData.lastPos = worldPos
 }
 
@@ -230,9 +230,9 @@ function onPointerUp(event) {
   }
   
   const pointerData = activePointers.get(event.pointerId)
-  if (pointerData) {
+  if (pointerData && pointerData.stroke) {
     // Finish stroke and bake into tiles
-    const finishedStroke = strokeManager.finishStroke()
+    const finishedStroke = strokeManager.finishStroke(pointerData.stroke)
     
     if (finishedStroke && finishedStroke.bounds) {
       // Mark affected tiles as dirty
