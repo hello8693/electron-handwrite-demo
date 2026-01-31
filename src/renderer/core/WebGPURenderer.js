@@ -16,6 +16,7 @@ export class WebGPURenderer {
     this.bindGroup = null
     this.commandQueue = []
     this.maxStrokes = 10000
+    this.msaaTexture = null // For 4x MSAA
   }
 
   async initialize(canvas) {
@@ -61,8 +62,27 @@ export class WebGPURenderer {
     // Create buffers
     this.createBuffers()
 
+    // Create MSAA texture
+    this.createMSAATexture()
+
     console.log('WebGPU renderer initialized successfully')
     return true
+  }
+
+  createMSAATexture() {
+    if (this.msaaTexture) {
+      this.msaaTexture.destroy()
+    }
+    
+    this.msaaTexture = this.device.createTexture({
+      size: {
+        width: this.canvas.width,
+        height: this.canvas.height
+      },
+      sampleCount: 4,
+      format: this.format,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT
+    })
   }
 
   async createPipeline() {
@@ -278,10 +298,12 @@ export class WebGPURenderer {
     // Begin render pass
     const commandEncoder = this.device.createCommandEncoder()
     const textureView = this.context.getCurrentTexture().createView()
+    const msaaView = this.msaaTexture.createView()
 
     const renderPass = commandEncoder.beginRenderPass({
       colorAttachments: [{
-        view: textureView,
+        view: msaaView, // Render to MSAA texture
+        resolveTarget: textureView, // Resolve to canvas
         clearValue: { r: 1, g: 1, b: 1, a: 1 },
         loadOp: 'clear',
         storeOp: 'store'
@@ -303,6 +325,8 @@ export class WebGPURenderer {
     if (this.canvas) {
       this.canvas.width = width
       this.canvas.height = height
+      // Recreate MSAA texture with new size
+      this.createMSAATexture()
     }
   }
 
@@ -310,6 +334,7 @@ export class WebGPURenderer {
     if (this.device) {
       this.strokeBuffer?.destroy()
       this.uniformBuffer?.destroy()
+      this.msaaTexture?.destroy()
       this.device.destroy()
     }
   }

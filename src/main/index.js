@@ -2,7 +2,7 @@ import { app, BrowserWindow, Menu } from 'electron'
 import { join } from 'path'
 
 // Enable WebGPU and Vulkan support
-app.commandLine.appendSwitch('enable-features', 'Vulkan,UseSkiaRenderer')
+app.commandLine.appendSwitch('enable-features', 'Vulkan')
 app.commandLine.appendSwitch('enable-unsafe-webgpu')
 app.commandLine.appendSwitch('use-vulkan')
 app.commandLine.appendSwitch('enable-gpu-rasterization')

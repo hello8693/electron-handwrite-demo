@@ -44,7 +44,7 @@
         <h3>⚠️ WebGPU Not Available</h3>
         <p>WebGPU requires Electron 28+ with Vulkan enabled.</p>
         <p>Falling back to Canvas 2D renderer.</p>
-        <button @click="rendererType = 'canvas'; switchRenderer()">Use Canvas 2D</button>
+        <button @click="handleFallbackToCanvas2D">Use Canvas 2D</button>
       </div>
     </div>
   </div>
@@ -374,6 +374,11 @@ function clearCanvas() {
 
 function resetView() {
   viewport.reset()
+}
+
+function handleFallbackToCanvas2D() {
+  rendererType.value = 'canvas'
+  switchRenderer()
 }
 </script>
 
