@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
+    "build:wasm": "cargo build --manifest-path src/renderer/wasm/ink_engine/Cargo.toml --target wasm32-unknown-unknown --release && wasm-bindgen --target web --out-dir src/renderer/wasm/ink_engine/pkg src/renderer/wasm/ink_engine/target/wasm32-unknown-unknown/release/ink_engine.wasm",
     "preview": "electron-vite preview",
     "start": "electron-vite preview"
   },

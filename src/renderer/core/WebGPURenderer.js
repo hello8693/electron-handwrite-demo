@@ -11,11 +11,12 @@ export class WebGPURenderer {
     this.pipeline = null
     this.canvas = null
     this.format = null
-    this.strokeBuffer = null
+    this.vertexBuffer = null
+    this.vertexCapacity = 0
     this.uniformBuffer = null
     this.bindGroup = null
     this.commandQueue = []
-    this.maxStrokes = 10000
+    this.maxStrokes = 20000
     this.msaaTexture = null // For 4x MSAA
   }
 
@@ -93,15 +94,12 @@ export class WebGPURenderer {
         viewport: vec4<f32>, // x, y, width, height
       }
       
-      struct Stroke {
-        position: vec2<f32>,
-        color: vec4<f32>,
-        width: f32,
-        _padding: f32,
+      struct VertexInput {
+        @location(0) position: vec2<f32>,
+        @location(1) color: vec4<f32>,
       }
       
       @group(0) @binding(0) var<uniform> uniforms: Uniforms;
-      @group(0) @binding(1) var<storage, read> strokes: array<Stroke>;
       
       struct VertexOutput {
         @builtin(position) position: vec4<f32>,
@@ -109,36 +107,15 @@ export class WebGPURenderer {
       }
       
       @vertex
-      fn vs_main(
-        @builtin(vertex_index) vertexIndex: u32,
-        @builtin(instance_index) instanceIndex: u32
-      ) -> VertexOutput {
+      fn vs_main(input: VertexInput) -> VertexOutput {
         var output: VertexOutput;
-        
-        let stroke = strokes[instanceIndex];
-        
-        // Generate quad vertices for each stroke point
-        var quadVertices = array<vec2<f32>, 6>(
-          vec2<f32>(-1.0, -1.0),
-          vec2<f32>(1.0, -1.0),
-          vec2<f32>(-1.0, 1.0),
-          vec2<f32>(-1.0, 1.0),
-          vec2<f32>(1.0, -1.0),
-          vec2<f32>(1.0, 1.0)
-        );
-        
-        let vertex = quadVertices[vertexIndex];
-        let radius = stroke.width * 0.5;
-        let worldPos = stroke.position + vertex * radius;
-        
-        output.position = uniforms.viewProjection * vec4<f32>(worldPos, 0.0, 1.0);
-        output.color = stroke.color;
+        output.position = uniforms.viewProjection * vec4<f32>(input.position, 0.0, 1.0);
+        output.color = input.color;
         
         return output;
       }
     `
 
-    // Fragment shader
     const fragmentShaderCode = `
       @fragment
       fn fs_main(@location(0) color: vec4<f32>) -> @location(0) vec4<f32> {
@@ -157,11 +134,6 @@ export class WebGPURenderer {
           binding: 0,
           visibility: GPUShaderStage.VERTEX,
           buffer: { type: 'uniform' }
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.VERTEX,
-          buffer: { type: 'read-only-storage' }
         }
       ]
     })
@@ -175,7 +147,16 @@ export class WebGPURenderer {
       layout: pipelineLayout,
       vertex: {
         module: shaderModule,
-        entryPoint: 'vs_main'
+        entryPoint: 'vs_main',
+        buffers: [
+          {
+            arrayStride: 24,
+            attributes: [
+              { shaderLocation: 0, offset: 0, format: 'float32x2' },
+              { shaderLocation: 1, offset: 8, format: 'float32x4' }
+            ]
+          }
+        ]
       },
       fragment: {
         module: shaderModule,
@@ -214,13 +195,6 @@ export class WebGPURenderer {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
     })
 
-    // Stroke buffer (storage buffer for GPU instancing)
-    const strokeDataSize = 32 // vec2 pos + vec4 color + float width + padding
-    this.strokeBuffer = this.device.createBuffer({
-      size: strokeDataSize * this.maxStrokes,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
-    })
-
     // Create bind group
     this.bindGroup = this.device.createBindGroup({
       layout: this.bindGroupLayout,
@@ -228,10 +202,6 @@ export class WebGPURenderer {
         {
           binding: 0,
           resource: { buffer: this.uniformBuffer }
-        },
-        {
-          binding: 1,
-          resource: { buffer: this.strokeBuffer }
         }
       ]
     })
@@ -263,37 +233,48 @@ export class WebGPURenderer {
     this.device.queue.writeBuffer(this.uniformBuffer, 0, uniformData)
   }
 
-  updateStrokes(strokes) {
-    // Convert strokes to GPU format
-    const strokeData = new Float32Array(strokes.length * 8) // 8 floats per stroke
-    
-    strokes.forEach((stroke, i) => {
-      const offset = i * 8
-      // Position (2 floats)
-      strokeData[offset + 0] = stroke.x
-      strokeData[offset + 1] = stroke.y
-      // Color (4 floats - RGBA)
-      strokeData[offset + 2] = stroke.r
-      strokeData[offset + 3] = stroke.g
-      strokeData[offset + 4] = stroke.b
-      strokeData[offset + 5] = stroke.a
-      // Width (1 float)
-      strokeData[offset + 6] = stroke.width
-      // Padding (1 float)
-      strokeData[offset + 7] = 0
-    })
+  updateVertices(vertices) {
+    const data = vertices instanceof Float32Array
+      ? vertices
+      : new Float32Array(vertices.length * 6)
 
-    this.device.queue.writeBuffer(this.strokeBuffer, 0, strokeData)
+    if (!(vertices instanceof Float32Array)) {
+      vertices.forEach((v, i) => {
+        const offset = i * 6
+        data[offset + 0] = v.x
+        data[offset + 1] = v.y
+        data[offset + 2] = v.r
+        data[offset + 3] = v.g
+        data[offset + 4] = v.b
+        data[offset + 5] = v.a
+      })
+    }
+
+    this.ensureVertexBuffer(data.byteLength)
+    this.device.queue.writeBuffer(this.vertexBuffer, 0, data)
+    return data.length / 6
   }
 
-  render(strokes, viewport) {
+  ensureVertexBuffer(byteLength) {
+    if (this.vertexBuffer && this.vertexCapacity >= byteLength) return
+    if (this.vertexBuffer) {
+      this.vertexBuffer.destroy()
+    }
+    this.vertexCapacity = Math.max(byteLength, 1024 * 1024)
+    this.vertexBuffer = this.device.createBuffer({
+      size: this.vertexCapacity,
+      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
+    })
+  }
+
+  render(vertices, viewport) {
     if (!this.device || !this.pipeline) return
 
     // Update uniforms
     this.updateViewport(viewport)
 
-    // Update stroke data
-    this.updateStrokes(strokes)
+    // Update vertex data
+    const vertexCount = this.updateVertices(vertices)
 
     // Begin render pass
     const commandEncoder = this.device.createCommandEncoder()
@@ -312,9 +293,9 @@ export class WebGPURenderer {
 
     renderPass.setPipeline(this.pipeline)
     renderPass.setBindGroup(0, this.bindGroup)
+    renderPass.setVertexBuffer(0, this.vertexBuffer)
     
-    // Draw strokes (6 vertices per stroke quad, instanced)
-    renderPass.draw(6, strokes.length, 0, 0)
+    renderPass.draw(vertexCount, 1, 0, 0)
     
     renderPass.end()
 
@@ -332,7 +313,7 @@ export class WebGPURenderer {
 
   destroy() {
     if (this.device) {
-      this.strokeBuffer?.destroy()
+      this.vertexBuffer?.destroy()
       this.uniformBuffer?.destroy()
       this.msaaTexture?.destroy()
       this.device.destroy()

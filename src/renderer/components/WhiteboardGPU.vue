@@ -1,12 +1,25 @@
 <template>
   <div class="whiteboard-container">
     <canvas
+      ref="staticCanvasRef"
+      class="whiteboard-canvas static-layer"
+    ></canvas>
+    <canvas
       ref="canvasRef"
-      class="whiteboard-canvas"
+      class="whiteboard-canvas live-layer"
       @pointerdown="onPointerDown"
       @pointermove="onPointerMove"
       @pointerup="onPointerUp"
       @pointercancel="onPointerCancel"
+      @mousedown="onMouseDown"
+      @mousemove="onMouseMove"
+      @mouseup="onMouseUp"
+      @mouseleave="onMouseUp"
+      @touchstart="onTouchStart"
+      @touchmove="onTouchMove"
+      @touchend="onTouchEnd"
+      @touchcancel="onTouchEnd"
+      @dragstart.prevent
       @wheel="onWheel"
     ></canvas>
     
@@ -69,6 +82,102 @@
               class="size-slider"
             />
             <span class="value-display">{{ brushWidth }}</span>
+          </div>
+          <div class="popup-row">
+            <label>Smooth</label>
+            <input 
+              type="range" 
+              v-model.number="smoothness" 
+              min="0.1" 
+              max="0.6"
+              step="0.05"
+              class="size-slider"
+            />
+            <span class="value-display">{{ smoothness.toFixed(2) }}</span>
+          </div>
+          <div class="popup-row">
+            <label>Speed</label>
+            <input 
+              type="range" 
+              v-model.number="speedLow" 
+              min="0.05" 
+              max="1.0"
+              step="0.05"
+              class="size-slider"
+            />
+            <span class="value-display">{{ speedLow.toFixed(2) }}</span>
+          </div>
+          <div class="popup-row">
+            <label>Speed+</label>
+            <input 
+              type="range" 
+              v-model.number="speedHigh" 
+              min="0.6" 
+              max="3.0"
+              step="0.1"
+              class="size-slider"
+            />
+            <span class="value-display">{{ speedHigh.toFixed(2) }}</span>
+          </div>
+          <div class="popup-row">
+            <label>MinSm</label>
+            <input 
+              type="range" 
+              v-model.number="minSmooth" 
+              min="0.05" 
+              max="0.6"
+              step="0.05"
+              class="size-slider"
+            />
+            <span class="value-display">{{ minSmooth.toFixed(2) }}</span>
+          </div>
+          <div class="popup-row">
+            <label>MaxSm</label>
+            <input 
+              type="range" 
+              v-model.number="maxSmooth" 
+              min="0.2" 
+              max="0.95"
+              step="0.05"
+              class="size-slider"
+            />
+            <span class="value-display">{{ maxSmooth.toFixed(2) }}</span>
+          </div>
+          <div class="popup-row">
+            <label>Wmin</label>
+            <input 
+              type="range" 
+              v-model.number="minWidthScale" 
+              min="0.2" 
+              max="1.2"
+              step="0.05"
+              class="size-slider"
+            />
+            <span class="value-display">{{ minWidthScale.toFixed(2) }}</span>
+          </div>
+          <div class="popup-row">
+            <label>Wmax</label>
+            <input 
+              type="range" 
+              v-model.number="maxWidthScale" 
+              min="0.8" 
+              max="2.4"
+              step="0.05"
+              class="size-slider"
+            />
+            <span class="value-display">{{ maxWidthScale.toFixed(2) }}</span>
+          </div>
+          <div class="popup-row">
+            <label>Curve</label>
+            <input 
+              type="range" 
+              v-model.number="curvatureBoost" 
+              min="0" 
+              max="1"
+              step="0.05"
+              class="size-slider"
+            />
+            <span class="value-display">{{ curvatureBoost.toFixed(2) }}</span>
           </div>
           <div class="popup-row">
             <label>Color</label>
@@ -153,14 +262,24 @@ import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { WebGPURenderer } from '../core/WebGPURenderer.js'
 import { GPUStrokeManager } from '../core/GPUStrokeManager.js'
 import { Viewport } from '../core/Viewport.js'
+import { loadInkWasm } from '../core/WasmInkEngine.js'
 
 // Legacy imports for Canvas 2D fallback
 import { TileManager, TILE_SIZE } from '../core/TileSystem.js'
 import { StrokeManager } from '../core/StrokeManager.js'
 
 const canvasRef = ref(null)
+const staticCanvasRef = ref(null)
 const brushColor = ref('#1F1F1F')
 const brushWidth = ref(2)
+const smoothness = ref(0.2)
+const speedLow = ref(0.2)
+const speedHigh = ref(1.6)
+const minSmooth = ref(0.12)
+const maxSmooth = ref(0.55)
+const minWidthScale = ref(0.45)
+const maxWidthScale = ref(1.35)
+const curvatureBoost = ref(0.5)
 const pointCount = ref(0)
 const fps = ref(0)
 const rendererType = ref('webgpu')
@@ -175,9 +294,16 @@ const currentPage = ref(1)
 const totalPages = ref(1)
 const pages = ref([]) // Store page data
 
+const supportsPointerEvents = typeof window !== 'undefined' && 'PointerEvent' in window
+
 let canvas = null
 let webgpuRenderer = null
 let gpuStrokeManager = null
+
+let staticCanvas = null
+let staticCtx = null
+let staticTileManager = null
+let staticStrokes = null
 
 // Canvas 2D fallback
 let ctx = null
@@ -185,12 +311,15 @@ let liveCanvas = null
 let liveCtx = null
 let tileManager = null
 let strokeManager = null
+let eraseStrokeManager = null
+let eraseStrokes = null
 
 let viewport = null
 const activePointers = new Map()
 let isPanning = false
 let lastPanPos = null
 let animationId = null
+let dpr = 1
 
 // FPS tracking
 let lastFrameTime = 0
@@ -205,6 +334,26 @@ watch(currentTool, (newTool) => {
   }
 })
 
+watch(smoothness, (value) => {
+  if (gpuStrokeManager) {
+    gpuStrokeManager.setSmoothing({ spacingFactor: value })
+  }
+})
+
+watch([speedLow, speedHigh, minSmooth, maxSmooth, minWidthScale, maxWidthScale, curvatureBoost], () => {
+  if (gpuStrokeManager) {
+    gpuStrokeManager.setSmoothing({
+      speedLow: speedLow.value,
+      speedHigh: speedHigh.value,
+      minSmooth: minSmooth.value,
+      maxSmooth: maxSmooth.value,
+      minWidthScale: minWidthScale.value,
+      maxWidthScale: maxWidthScale.value,
+      curvatureBoost: curvatureBoost.value
+    })
+  }
+})
+
 // Close popup when clicking outside
 const handleClickOutside = (event) => {
   if (showPenPopup.value && !event.target.closest('.toolbar-center')) {
@@ -213,7 +362,9 @@ const handleClickOutside = (event) => {
 }
 
 onMounted(async () => {
+  console.log('[Whiteboard] mounted')
   canvas = canvasRef.value
+  staticCanvas = staticCanvasRef.value
   viewport = new Viewport(window.innerWidth, window.innerHeight)
   
   // Initialize first page
@@ -233,6 +384,7 @@ onMounted(async () => {
   // Listen for clear canvas event from main process
   if (window.electronAPI) {
     window.electronAPI.onClearCanvas(() => {
+      console.log('[Whiteboard] clear-canvas event')
       clearCanvas()
     })
   }
@@ -250,11 +402,31 @@ onUnmounted(() => {
 })
 
 async function initializeRenderer() {
+  console.log('[Whiteboard] initializeRenderer', { rendererType: rendererType.value })
   if (rendererType.value === 'webgpu') {
     try {
       webgpuRenderer = new WebGPURenderer()
       await webgpuRenderer.initialize(canvas)
       gpuStrokeManager = new GPUStrokeManager()
+      const wasm = await loadInkWasm()
+      if (wasm?.build_mesh) {
+        gpuStrokeManager.setWasmEngine(wasm)
+      }
+      staticCtx = staticCanvas.getContext('2d', { alpha: false })
+      staticTileManager = new TileManager()
+      staticStrokes = new Map()
+      eraseStrokeManager = new StrokeManager()
+      eraseStrokes = new Map()
+      gpuStrokeManager.setSmoothing({
+        spacingFactor: smoothness.value,
+        speedLow: speedLow.value,
+        speedHigh: speedHigh.value,
+        minSmooth: minSmooth.value,
+        maxSmooth: maxSmooth.value,
+        minWidthScale: minWidthScale.value,
+        maxWidthScale: maxWidthScale.value,
+        curvatureBoost: curvatureBoost.value
+      })
       isWebGPU.value = true
       webgpuSupported.value = true
       console.log('✅ WebGPU renderer initialized')
@@ -278,16 +450,21 @@ async function initializeRenderer() {
 }
 
 function initializeCanvas2D() {
+  console.log('[Whiteboard] initializeCanvas2D')
   ctx = canvas.getContext('2d', { alpha: false })
   liveCanvas = document.createElement('canvas')
   liveCtx = liveCanvas.getContext('2d', { willReadFrequently: false })
   tileManager = new TileManager()
   strokeManager = new StrokeManager()
+  eraseStrokeManager = new StrokeManager()
+  eraseStrokes = new Map()
+  staticCtx = staticCanvas.getContext('2d', { alpha: false })
   isWebGPU.value = false
   console.log('✅ Canvas 2D renderer initialized')
 }
 
 async function switchRenderer() {
+  console.log('[Whiteboard] switchRenderer', { rendererType: rendererType.value })
   // Clear current renderer
   if (webgpuRenderer) {
     webgpuRenderer.destroy()
@@ -303,8 +480,15 @@ async function switchRenderer() {
 }
 
 function resizeCanvas() {
-  canvas.width = window.innerWidth
-  canvas.height = window.innerHeight
+  console.log('[Whiteboard] resizeCanvas', { w: window.innerWidth, h: window.innerHeight })
+  dpr = window.devicePixelRatio || 1
+  canvas.width = Math.floor(window.innerWidth * dpr)
+  canvas.height = Math.floor(window.innerHeight * dpr)
+
+  if (staticCanvas) {
+    staticCanvas.width = canvas.width
+    staticCanvas.height = canvas.height
+  }
   
   if (liveCanvas) {
     liveCanvas.width = canvas.width
@@ -315,7 +499,7 @@ function resizeCanvas() {
     webgpuRenderer.resize(canvas.width, canvas.height)
   }
   
-  viewport.resize(canvas.width, canvas.height)
+  viewport.resize(window.innerWidth, window.innerHeight)
 }
 
 function render() {
@@ -330,12 +514,13 @@ function render() {
   }
   
   if (isWebGPU.value && webgpuRenderer) {
+    renderStaticTiles()
     // WebGPU rendering path
-    const gpuPoints = gpuStrokeManager.getAllGPUPoints()
-    pointCount.value = gpuPoints.length
+    const gpuVertices = gpuStrokeManager.getAllGPUVertices()
+    pointCount.value = Math.floor(gpuVertices.length / 6)
     
-    if (gpuPoints.length > 0) {
-      webgpuRenderer.render(gpuPoints, viewport)
+    if (gpuVertices.length > 0) {
+      webgpuRenderer.render(gpuVertices, viewport)
     }
   } else if (ctx && tileManager) {
     // Canvas 2D rendering path (legacy)
@@ -347,8 +532,9 @@ function render() {
 
 function renderCanvas2D() {
   // Clear main canvas
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   ctx.fillStyle = '#ffffff'
-  ctx.fillRect(0, 0, canvas.width, canvas.height)
+  ctx.fillRect(0, 0, canvas.width / dpr, canvas.height / dpr)
   
   ctx.save()
   
@@ -357,8 +543,9 @@ function renderCanvas2D() {
   ctx.translate(-viewport.x, -viewport.y)
   
   // Render tile cache layer
-  const visibleTiles = tileManager.renderTiles(
+  const visibleTiles = tileManager.renderTilesWithErase(
     strokeManager.getAllStrokes(),
+    eraseStrokes,
     viewport
   )
   
@@ -369,7 +556,8 @@ function renderCanvas2D() {
   }
   
   // Render live layer
-  liveCtx.clearRect(0, 0, liveCanvas.width, liveCanvas.height)
+  liveCtx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  liveCtx.clearRect(0, 0, liveCanvas.width / dpr, liveCanvas.height / dpr)
   liveCtx.save()
   liveCtx.scale(viewport.scale, viewport.scale)
   liveCtx.translate(-viewport.x, -viewport.y)
@@ -399,15 +587,49 @@ function renderCanvas2D() {
     .reduce((sum, stroke) => sum + stroke.points.length, 0)
 }
 
+function renderStaticTiles() {
+  if (!staticCtx || !staticTileManager || !staticStrokes) return
+
+  staticCtx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  staticCtx.fillStyle = '#ffffff'
+  staticCtx.fillRect(0, 0, staticCanvas.width / dpr, staticCanvas.height / dpr)
+
+  staticCtx.save()
+  staticCtx.scale(viewport.scale, viewport.scale)
+  staticCtx.translate(-viewport.x, -viewport.y)
+
+  const visibleTiles = staticTileManager.renderTilesWithErase(staticStrokes, eraseStrokes, viewport)
+  for (const tile of visibleTiles) {
+    const worldX = tile.x * TILE_SIZE
+    const worldY = tile.y * TILE_SIZE
+    staticCtx.drawImage(tile.canvas, worldX, worldY)
+  }
+
+  staticCtx.restore()
+}
+
 function onPointerDown(event) {
   event.preventDefault()
+  console.log('[Whiteboard] pointerdown', {
+    type: event.pointerType,
+    id: event.pointerId,
+    button: event.button,
+    x: event.clientX,
+    y: event.clientY,
+    isPrimary: event.isPrimary,
+    tool: currentTool.value,
+    locked: isLocked.value
+  })
   
   // Don't allow drawing if locked
   if (isLocked.value) {
     return
   }
   
-  canvas.setPointerCapture(event.pointerId)
+  const pointerId = event.pointerId ?? 1
+  if (event.pointerId != null && canvas?.setPointerCapture) {
+    canvas.setPointerCapture(pointerId)
+  }
   
   // Right/middle mouse buttons pan; non-mouse pointers skip this path.
   if (event.pointerType === 'mouse' && (event.button === 1 || event.button === 2)) {
@@ -419,32 +641,63 @@ function onPointerDown(event) {
   // Non-mouse inputs use primary contact, while mouse inputs require the left button.
   const shouldInitiateDrawing = event.pointerType === 'mouse' ? event.button === 0 : event.isPrimary
   
-  // Primary contact for drawing (pen only, eraser handled separately)
-  if (shouldInitiateDrawing && currentTool.value === 'pen') {
+  const pressure = event.pressure || 1.0
+  const tilt = event.tiltX != null || event.tiltY != null ? { x: event.tiltX, y: event.tiltY } : null
+  const time = event.timeStamp || performance.now()
+
+  if (!shouldInitiateDrawing) return
+
+  if (currentTool.value === 'pen') {
     const worldPos = viewport.screenToWorld(event.clientX, event.clientY)
+    console.log('[Whiteboard] startStroke', { worldPos, isWebGPU: isWebGPU.value })
     
     if (isWebGPU.value) {
       const stroke = gpuStrokeManager.startStroke(
         worldPos.x,
         worldPos.y,
         brushColor.value,
-        brushWidth.value
+        brushWidth.value,
+        pressure,
+        tilt,
+        time
       )
-      activePointers.set(event.pointerId, { stroke })
+      activePointers.set(pointerId, { stroke })
     } else {
       const stroke = strokeManager.startStroke(
         worldPos.x,
         worldPos.y,
         brushColor.value,
-        brushWidth.value
+        brushWidth.value,
+        time
       )
-      activePointers.set(event.pointerId, { stroke, lastPos: worldPos })
+      activePointers.set(pointerId, { stroke, lastPos: worldPos })
     }
+    return
+  }
+
+  if (currentTool.value === 'eraser') {
+    const worldPos = viewport.screenToWorld(event.clientX, event.clientY)
+    const eraseWidth = Math.max(8, brushWidth.value * 2.5)
+    const stroke = eraseStrokeManager.startStroke(
+      worldPos.x,
+      worldPos.y,
+      '#000000',
+      eraseWidth,
+      time
+    )
+    activePointers.set(pointerId, { stroke, isEraser: true })
   }
 }
 
 function onPointerMove(event) {
   event.preventDefault()
+  console.log('[Whiteboard] pointermove', {
+    type: event.pointerType,
+    id: event.pointerId,
+    x: event.clientX,
+    y: event.clientY,
+    isPanning
+  })
   
   if (isPanning && lastPanPos) {
     const deltaX = event.clientX - lastPanPos.x
@@ -454,22 +707,88 @@ function onPointerMove(event) {
     return
   }
   
-  const pointerData = activePointers.get(event.pointerId)
-  if (!pointerData || !pointerData.stroke) return
+  const pointerId = event.pointerId ?? 1
+  let pointerData = activePointers.get(pointerId)
+
+  if (!pointerData || !pointerData.stroke) {
+    const buttons = event.buttons ?? 0
+    const isPressed = event.pointerType === 'mouse' ? (buttons & 1) === 1 : true
+    const canStartOnMove = !isLocked.value && currentTool.value === 'pen' && isPressed
+
+    console.log('[Whiteboard] pointermove missing pointerData', {
+      pointerId,
+      buttons,
+      isPressed,
+      canStartOnMove,
+      activePointers: activePointers.size
+    })
+
+    if (canStartOnMove && currentTool.value === 'pen') {
+      const worldPos = viewport.screenToWorld(event.clientX, event.clientY)
+      console.log('[Whiteboard] startStroke (move fallback)', { worldPos, isWebGPU: isWebGPU.value })
+      const pressure = event.pressure || 1.0
+      const tilt = event.tiltX != null || event.tiltY != null ? { x: event.tiltX, y: event.tiltY } : null
+      const time = event.timeStamp || performance.now()
+
+      if (isWebGPU.value) {
+        const stroke = gpuStrokeManager.startStroke(
+          worldPos.x,
+          worldPos.y,
+          brushColor.value,
+          brushWidth.value,
+          pressure,
+          tilt,
+          time
+        )
+        activePointers.set(pointerId, { stroke })
+      } else {
+        const stroke = strokeManager.startStroke(
+          worldPos.x,
+          worldPos.y,
+          brushColor.value,
+          brushWidth.value,
+          time
+        )
+        activePointers.set(pointerId, { stroke, lastPos: worldPos })
+      }
+
+      pointerData = activePointers.get(pointerId)
+    } else {
+      return
+    }
+  }
   
   const worldPos = viewport.screenToWorld(event.clientX, event.clientY)
+  const pressure = event.pressure || 1.0
+  const tilt = event.tiltX != null || event.tiltY != null ? { x: event.tiltX, y: event.tiltY } : null
+  const time = event.timeStamp || performance.now()
   
+  if (pointerData.isEraser) {
+    eraseStrokeManager.addPointToStroke(pointerData.stroke, worldPos.x, worldPos.y, pressure, tilt, time)
+    pointerData.lastPos = worldPos
+    return
+  }
+
   if (isWebGPU.value) {
-    gpuStrokeManager.addPoint(worldPos.x, worldPos.y)
+    gpuStrokeManager.addPoint(worldPos.x, worldPos.y, pressure, tilt, time)
   } else {
-    strokeManager.addPointToStroke(pointerData.stroke, worldPos.x, worldPos.y)
+    strokeManager.addPointToStroke(pointerData.stroke, worldPos.x, worldPos.y, pressure, tilt, time)
     pointerData.lastPos = worldPos
   }
 }
 
 function onPointerUp(event) {
   event.preventDefault()
-  canvas.releasePointerCapture(event.pointerId)
+  console.log('[Whiteboard] pointerup', {
+    type: event.pointerType,
+    id: event.pointerId,
+    x: event.clientX,
+    y: event.clientY
+  })
+  const pointerId = event.pointerId ?? 1
+  if (event.pointerId != null && canvas?.releasePointerCapture) {
+    canvas.releasePointerCapture(pointerId)
+  }
   
   if (isPanning) {
     isPanning = false
@@ -477,10 +796,43 @@ function onPointerUp(event) {
     return
   }
   
-  const pointerData = activePointers.get(event.pointerId)
+  const pointerData = activePointers.get(pointerId)
   if (pointerData && pointerData.stroke) {
+    if (pointerData.isEraser) {
+      const finishedErase = eraseStrokeManager.finishStroke(pointerData.stroke)
+      if (finishedErase && finishedErase.bounds) {
+        eraseStrokes.set(finishedErase.id, finishedErase)
+        const manager = isWebGPU.value ? staticTileManager : tileManager
+        if (manager) {
+          const affectedTiles = manager.getAffectedTiles(finishedErase.bounds)
+          affectedTiles.forEach(tile => {
+            tile.addEraseStroke(finishedErase.id)
+          })
+        }
+      }
+      activePointers.delete(pointerId)
+      return
+    }
+
     if (isWebGPU.value) {
-      gpuStrokeManager.finishStroke()
+      const finished = gpuStrokeManager.finishStroke()
+      if (finished && staticTileManager && staticStrokes) {
+        const bakedStroke = {
+          id: `gpu_${finished.id}`,
+          color: rgbaFromColor(finished.color),
+          width: finished.width,
+          points: finished.points,
+          bounds: finished.bounds
+        }
+        staticStrokes.set(bakedStroke.id, bakedStroke)
+
+        if (bakedStroke.bounds) {
+          const affectedTiles = staticTileManager.getAffectedTiles(bakedStroke.bounds)
+          affectedTiles.forEach(tile => {
+            tile.addStroke(bakedStroke.id)
+          })
+        }
+      }
     } else {
       const finishedStroke = strokeManager.finishStroke(pointerData.stroke)
       
@@ -492,7 +844,7 @@ function onPointerUp(event) {
       }
     }
     
-    activePointers.delete(event.pointerId)
+    activePointers.delete(pointerId)
   }
 }
 
@@ -500,23 +852,96 @@ function onPointerCancel(event) {
   onPointerUp(event)
 }
 
+function onMouseDown(event) {
+  if (supportsPointerEvents) return
+  onPointerDown({
+    ...event,
+    pointerId: 1,
+    pointerType: 'mouse',
+    isPrimary: event.button === 0,
+    pressure: 1.0
+  })
+}
+
+function onMouseMove(event) {
+  if (supportsPointerEvents) return
+  onPointerMove({
+    ...event,
+    pointerId: 1,
+    pointerType: 'mouse',
+    isPrimary: true,
+    pressure: 1.0
+  })
+}
+
+function onMouseUp(event) {
+  if (supportsPointerEvents) return
+  onPointerUp({
+    ...event,
+    pointerId: 1,
+    pointerType: 'mouse',
+    isPrimary: true,
+    pressure: 1.0
+  })
+}
+
+function onTouchStart(event) {
+  if (supportsPointerEvents) return
+  event.preventDefault()
+  handleTouches(event, onPointerDown)
+}
+
+function onTouchMove(event) {
+  if (supportsPointerEvents) return
+  event.preventDefault()
+  handleTouches(event, onPointerMove)
+}
+
+function onTouchEnd(event) {
+  if (supportsPointerEvents) return
+  event.preventDefault()
+  handleTouches(event, onPointerUp)
+}
+
+function handleTouches(event, handler) {
+  const primaryId = event.touches[0]?.identifier
+  for (const touch of event.changedTouches) {
+    handler({
+      pointerId: touch.identifier,
+      pointerType: 'touch',
+      isPrimary: primaryId == null ? true : touch.identifier === primaryId,
+      clientX: touch.clientX,
+      clientY: touch.clientY,
+      pressure: touch.force || 1.0,
+      preventDefault: () => event.preventDefault()
+    })
+  }
+}
+
 function onWheel(event) {
   event.preventDefault()
+  console.log('[Whiteboard] wheel', { deltaY: event.deltaY, x: event.clientX, y: event.clientY })
   viewport.zoom(event.deltaY, event.clientX, event.clientY)
 }
 
 function clearCanvas() {
+  console.log('[Whiteboard] clearCanvas')
   if (isWebGPU.value) {
     gpuStrokeManager.clear()
+    staticStrokes?.clear()
+    staticTileManager?.clearAll()
+    eraseStrokes?.clear()
   } else {
     strokeManager.clear()
     tileManager.clearAll()
+    eraseStrokes?.clear()
   }
   activePointers.clear()
   pointCount.value = 0
 }
 
 function resetView() {
+  console.log('[Whiteboard] resetView')
   viewport.reset()
 }
 
@@ -527,16 +952,27 @@ function handleFallbackToCanvas2D() {
 
 // Toolbar functions
 function toggleLock() {
+  console.log('[Whiteboard] toggleLock', { next: !isLocked.value })
   isLocked.value = !isLocked.value
 }
 
 function selectTool(tool) {
+  console.log('[Whiteboard] selectTool', { tool })
   currentTool.value = tool
   if (tool === 'pen') {
     showPenPopup.value = true
   } else {
     showPenPopup.value = false
   }
+}
+
+function rgbaFromColor(color) {
+  if (!color) return 'rgba(0,0,0,1)'
+  const r = Math.round((color.r ?? 0) * 255)
+  const g = Math.round((color.g ?? 0) * 255)
+  const b = Math.round((color.b ?? 0) * 255)
+  const a = color.a ?? 1
+  return `rgba(${r}, ${g}, ${b}, ${a})`
 }
 
 function newPage() {
@@ -613,9 +1049,22 @@ function loadPage(index) {
 }
 
 .whiteboard-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
   display: block;
   cursor: crosshair;
   touch-action: none;
+}
+
+.static-layer {
+  z-index: 1;
+}
+
+.live-layer {
+  z-index: 2;
 }
 
 /* Bottom Toolbar - Minimalist Design */
@@ -737,11 +1186,24 @@ function loadPage(index) {
 
 .size-slider {
   flex: 1;
-  height: 4px;
+  height: 6px;
   -webkit-appearance: none;
   appearance: none;
-  background: var(--md-sys-color-outline);
+  background: var(--md-sys-color-surface-variant);
   outline: none;
+  border-radius: 999px;
+}
+
+.size-slider::-webkit-slider-runnable-track {
+  height: 6px;
+  background: var(--md-sys-color-surface-variant);
+  border-radius: 999px;
+}
+
+.size-slider::-moz-range-track {
+  height: 6px;
+  background: var(--md-sys-color-surface-variant);
+  border-radius: 999px;
 }
 
 .size-slider::-webkit-slider-thumb {
@@ -751,7 +1213,8 @@ function loadPage(index) {
   height: 20px;
   background: var(--md-sys-color-primary);
   cursor: pointer;
-  border: none;
+  border: 2px solid #ffffff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.2);
 }
 
 .size-slider::-moz-range-thumb {
@@ -759,7 +1222,8 @@ function loadPage(index) {
   height: 20px;
   background: var(--md-sys-color-primary);
   cursor: pointer;
-  border: none;
+  border: 2px solid #ffffff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.2);
 }
 
 .value-display {

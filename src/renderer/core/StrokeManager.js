@@ -11,26 +11,30 @@ export class Stroke {
     this.width = width
     this.points = []
     this.bounds = null
+    this.createdAt = performance.now()
+    this.updatedAt = this.createdAt
   }
 
-  addPoint(x, y, pressure = 1.0) {
-    this.points.push({ x, y, pressure })
+  addPoint(x, y, pressure = 1.0, tilt = null, time = performance.now()) {
+    this.points.push({ x, y, pressure, tilt, time })
     this.updateBounds(x, y)
+    this.updatedAt = time
   }
 
-  updateBounds(x, y) {
+  updateBounds(x, y, pressure = 1.0) {
+    const radius = (this.width * Math.max(0.25, pressure)) / 2
     if (!this.bounds) {
       this.bounds = {
-        minX: x - this.width / 2,
-        minY: y - this.width / 2,
-        maxX: x + this.width / 2,
-        maxY: y + this.width / 2
+        minX: x - radius,
+        minY: y - radius,
+        maxX: x + radius,
+        maxY: y + radius
       }
     } else {
-      this.bounds.minX = Math.min(this.bounds.minX, x - this.width / 2)
-      this.bounds.minY = Math.min(this.bounds.minY, y - this.width / 2)
-      this.bounds.maxX = Math.max(this.bounds.maxX, x + this.width / 2)
-      this.bounds.maxY = Math.max(this.bounds.maxY, y + this.width / 2)
+      this.bounds.minX = Math.min(this.bounds.minX, x - radius)
+      this.bounds.minY = Math.min(this.bounds.minY, y - radius)
+      this.bounds.maxX = Math.max(this.bounds.maxX, x + radius)
+      this.bounds.maxY = Math.max(this.bounds.maxY, y + radius)
     }
   }
 
@@ -75,23 +79,23 @@ export class StrokeManager {
     }
   }
 
-  startStroke(x, y, color = '#000000', width = 2) {
+  startStroke(x, y, color = '#000000', width = 2, time = performance.now()) {
     const id = `stroke_${this.strokeCounter++}`
     const stroke = new Stroke(id, color, width)
-    stroke.addPoint(x, y)
+    stroke.addPoint(x, y, 1.0, null, time)
     this.currentStroke = stroke
     return stroke
   }
 
-  addPointToStroke(stroke, x, y, pressure = 1.0) {
+  addPointToStroke(stroke, x, y, pressure = 1.0, tilt = null, time = performance.now()) {
     if (!stroke) return null
-    stroke.addPoint(x, y, pressure)
+    stroke.addPoint(x, y, pressure, tilt, time)
     return stroke
   }
 
-  addPointToCurrentStroke(x, y, pressure = 1.0) {
+  addPointToCurrentStroke(x, y, pressure = 1.0, tilt = null, time = performance.now()) {
     if (!this.currentStroke) return null
-    this.currentStroke.addPoint(x, y, pressure)
+    this.currentStroke.addPoint(x, y, pressure, tilt, time)
     return this.currentStroke
   }
 

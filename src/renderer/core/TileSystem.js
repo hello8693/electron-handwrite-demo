@@ -15,11 +15,13 @@ export class Tile {
     this.ctx = this.canvas.getContext('2d', { willReadFrequently: false })
     this.dirty = false
     this.strokes = [] // Stroke IDs that affect this tile
+    this.eraseStrokes = [] // Erase stroke IDs affecting this tile
   }
 
   clear() {
     this.ctx.clearRect(0, 0, TILE_SIZE, TILE_SIZE)
     this.strokes = []
+    this.eraseStrokes = []
     this.dirty = true
   }
 
@@ -30,7 +32,14 @@ export class Tile {
     }
   }
 
-  render(strokes, viewport) {
+  addEraseStroke(strokeId) {
+    if (!this.eraseStrokes.includes(strokeId)) {
+      this.eraseStrokes.push(strokeId)
+      this.dirty = true
+    }
+  }
+
+  render(strokes, viewport, eraseStrokes) {
     if (!this.dirty) return
 
     this.ctx.clearRect(0, 0, TILE_SIZE, TILE_SIZE)
@@ -66,6 +75,34 @@ export class Tile {
       }
       
       this.ctx.stroke()
+    }
+
+    // Apply erase strokes (destination-out)
+    if (eraseStrokes && this.eraseStrokes.length > 0) {
+      this.ctx.globalCompositeOperation = 'destination-out'
+      for (const eraseId of this.eraseStrokes) {
+        const eraseStroke = eraseStrokes.get(eraseId)
+        if (!eraseStroke) continue
+
+        this.ctx.beginPath()
+        this.ctx.lineWidth = eraseStroke.width
+        this.ctx.lineCap = 'round'
+        this.ctx.lineJoin = 'round'
+
+        let firstPoint = true
+        for (const point of eraseStroke.points) {
+          const x = point.x - worldX
+          const y = point.y - worldY
+          if (firstPoint) {
+            this.ctx.moveTo(x, y)
+            firstPoint = false
+          } else {
+            this.ctx.lineTo(x, y)
+          }
+        }
+        this.ctx.stroke()
+      }
+      this.ctx.globalCompositeOperation = 'source-over'
     }
     
     this.ctx.restore()
@@ -137,6 +174,14 @@ export class TileManager {
     const visibleTiles = this.getVisibleTiles(viewport)
     visibleTiles.forEach(tile => {
       tile.render(strokes, viewport)
+    })
+    return visibleTiles
+  }
+
+  renderTilesWithErase(strokes, eraseStrokes, viewport) {
+    const visibleTiles = this.getVisibleTiles(viewport)
+    visibleTiles.forEach(tile => {
+      tile.render(strokes, viewport, eraseStrokes)
     })
     return visibleTiles
   }
