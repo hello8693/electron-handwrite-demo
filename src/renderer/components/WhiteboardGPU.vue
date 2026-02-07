@@ -198,8 +198,36 @@
         </div>
       </div>
 
-      <!-- Right Section: Page Navigation -->
+      <!-- Right Section: Save/Load and Page Navigation -->
       <div class="toolbar-section toolbar-right">
+        <!-- Save/Load buttons -->
+        <button 
+          class="tool-btn"
+          @click="saveToISF"
+          title="Save to ISF (WPF Format)"
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+            <polyline points="17 21 17 13 7 13 7 21"></polyline>
+            <polyline points="7 3 7 8 15 8"></polyline>
+          </svg>
+        </button>
+        
+        <button 
+          class="tool-btn"
+          @click="loadFromISF"
+          title="Load from ISF (WPF Format)"
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+            <path d="M12 18v-6"></path>
+            <polyline points="9 15 12 18 15 15"></polyline>
+          </svg>
+        </button>
+
+        <div class="toolbar-divider"></div>
+
         <button 
           class="tool-btn"
           @click="newPage"
@@ -1123,6 +1151,91 @@ function rgbaFromColor(color) {
   return `rgba(${r}, ${g}, ${b}, ${a})`
 }
 
+// ISF Save/Load functions
+function saveToISF() {
+  console.log('[Whiteboard] saveToISF')
+  
+  try {
+    const manager = isWebGPU.value ? gpuStrokeManager : strokeManager
+    const serialized = manager.serializeAllStrokes({ precision: 2 })
+    
+    // Get compression stats
+    const stats = manager.getCompressionStats()
+    console.log('[ISF] Compression stats:', {
+      strokeCount: stats.strokeCount,
+      totalPoints: stats.totalPoints,
+      originalSize: `${(stats.originalSize / 1024).toFixed(2)} KB`,
+      compressedSize: `${(stats.compressedSize / 1024).toFixed(2)} KB`,
+      compressionRatio: `${stats.compressionRatio.toFixed(2)}x`,
+      avgBytesPerPoint: `${stats.avgBytesPerPoint.toFixed(2)} bytes`
+    })
+    
+    // Create download
+    const blob = new Blob([serialized], { type: 'application/octet-stream' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `whiteboard-${Date.now()}.isf`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+    
+    console.log('[ISF] Saved successfully:', {
+      filename: a.download,
+      size: `${(serialized.length / 1024).toFixed(2)} KB`
+    })
+    
+    // Show success message
+    alert(`Saved to ISF format!\n\nStrokes: ${stats.strokeCount}\nPoints: ${stats.totalPoints}\nCompression: ${stats.compressionRatio.toFixed(2)}x\nSize: ${(serialized.length / 1024).toFixed(2)} KB`)
+  } catch (error) {
+    console.error('[ISF] Save error:', error)
+    alert(`Failed to save: ${error.message}`)
+  }
+}
+
+function loadFromISF() {
+  console.log('[Whiteboard] loadFromISF')
+  
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = '.isf'
+  
+  input.onchange = async (e) => {
+    const file = e.target.files[0]
+    if (!file) return
+    
+    try {
+      const arrayBuffer = await file.arrayBuffer()
+      const bytes = new Uint8Array(arrayBuffer)
+      
+      console.log('[ISF] Loading file:', {
+        filename: file.name,
+        size: `${(bytes.length / 1024).toFixed(2)} KB`
+      })
+      
+      const manager = isWebGPU.value ? gpuStrokeManager : strokeManager
+      const loadedStrokes = manager.loadFromISF(bytes)
+      
+      console.log('[ISF] Loaded successfully:', {
+        strokeCount: loadedStrokes.length,
+        totalPoints: loadedStrokes.reduce((sum, s) => sum + s.points.length, 0)
+      })
+      
+      // Show success message
+      alert(`Loaded from ISF format!\n\nStrokes: ${loadedStrokes.length}\nPoints: ${loadedStrokes.reduce((sum, s) => sum + s.points.length, 0)}`)
+      
+      // Trigger re-render
+      pointCount.value = loadedStrokes.reduce((sum, s) => sum + s.points.length, 0)
+    } catch (error) {
+      console.error('[ISF] Load error:', error)
+      alert(`Failed to load: ${error.message}`)
+    }
+  }
+  
+  input.click()
+}
+
 function newPage() {
   // Save current page state
   savePage()
@@ -1299,6 +1412,15 @@ function loadPage(index) {
   font-weight: 500;
   min-width: 70px;
   text-align: center;
+}
+
+/* Toolbar Divider */
+.toolbar-divider {
+  width: 1px;
+  height: 24px;
+  background: var(--md-sys-color-outline);
+  margin: 0 8px;
+  opacity: 0.3;
 }
 
 /* Pen Settings Popup */
