@@ -308,8 +308,11 @@ export class StrokeDescriptor {
     descriptor.strokeId = idResult.value
     pos += idResult.bytesRead
     
-    // Color
-    descriptor.color = `rgb(${bytes[pos]}, ${bytes[pos + 1]}, ${bytes[pos + 2]})`
+    // Color - convert back to hex format for consistency
+    const r = bytes[pos].toString(16).padStart(2, '0')
+    const g = bytes[pos + 1].toString(16).padStart(2, '0')
+    const b = bytes[pos + 2].toString(16).padStart(2, '0')
+    descriptor.color = `#${r}${g}${b}`
     pos += 3
     
     // Width
@@ -322,12 +325,24 @@ export class StrokeDescriptor {
 
   parseColor(color) {
     // Parse hex or rgb color to RGB components
-    if (typeof color === 'string' && color.startsWith('#')) {
-      const hex = color.slice(1)
-      return {
-        r: parseInt(hex.slice(0, 2), 16),
-        g: parseInt(hex.slice(2, 4), 16),
-        b: parseInt(hex.slice(4, 6), 16)
+    if (typeof color === 'string') {
+      if (color.startsWith('#')) {
+        const hex = color.slice(1)
+        return {
+          r: parseInt(hex.slice(0, 2), 16),
+          g: parseInt(hex.slice(2, 4), 16),
+          b: parseInt(hex.slice(4, 6), 16)
+        }
+      } else if (color.startsWith('rgb(') || color.startsWith('rgba(')) {
+        // Parse rgb(r, g, b) or rgba(r, g, b, a) format
+        const match = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/)
+        if (match) {
+          return {
+            r: parseInt(match[1]),
+            g: parseInt(match[2]),
+            b: parseInt(match[3])
+          }
+        }
       }
     }
     

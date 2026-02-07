@@ -106,7 +106,7 @@ export class StrokeNode {
     return {
       a: { x: this.lastNode.x + nx * r0, y: this.lastNode.y + ny * r0 },
       b: { x: this.lastNode.x - nx * r0, y: this.lastNode.y - ny * r0 },
-      c: { x: this.thisNode.x - nx * r1, y: this.thisNode.y + ny * r1 },
+      c: { x: this.thisNode.x - nx * r1, y: this.thisNode.y - ny * r1 },
       d: { x: this.thisNode.x + nx * r1, y: this.thisNode.y + ny * r1 }
     }
   }
