@@ -2,9 +2,16 @@
  * GPU Stroke Manager - Optimized for GPU rendering
  * Converts stroke data into GPU-friendly format with instanced rendering
  * Maintains bounds + tile buckets for spatial queries
+ * 
+ * Enhanced with WPF-inspired features:
+ * - Angle-based stroke node optimization
+ * - ISF serialization support
+ * - Pressure-aware rendering
  */
 
 import { TILE_SIZE } from './TileSystem.js'
+import { StrokeGeometryOptimizer } from './StrokeNode.js'
+import { ISFStrokeSerializer } from './ISFCodec.js'
 
 export class GPUStrokeManager {
   constructor() {
@@ -18,6 +25,16 @@ export class GPUStrokeManager {
     this.wasmWorker = null
     this.strokeMeshes = new Map()
     this.smoothingEnabled = true
+
+    // WPF-inspired features
+    this.geometryOptimizer = new StrokeGeometryOptimizer({
+      angleTolerance: 45,
+      largeNodeAngleTolerance: 20,
+      transformAngleTolerance: 10,
+      largeNodeThreshold: 40,
+      areaChangeThreshold: 0.70
+    })
+    this.useAngleCulling = true // Enable WPF angle-based optimization
 
     this.minWidthScale = 0.4
     this.maxWidthScale = 1.6
@@ -649,5 +666,190 @@ export class GPUStrokeManager {
 
   getStrokeCount() {
     return this.strokes.length + (this.currentStroke ? 1 : 0)
+  }
+
+  /**
+   * WPF-inspired methods
+   */
+
+  /**
+   * Enable/disable angle-based node culling
+   */
+  setAngleCulling(enabled) {
+    this.useAngleCulling = !!enabled
+  }
+
+  /**
+   * Optimize stroke geometry using WPF's angle-based algorithm
+   * Reduces point count while maintaining visual quality
+   */
+  optimizeStrokeGeometry(stroke) {
+    if (!this.useAngleCulling || !stroke || !stroke.points || stroke.points.length === 0) {
+      return stroke
+    }
+
+    const result = this.geometryOptimizer.optimizeStrokeGeometry(
+      stroke.points,
+      stroke.width,
+      { calculateBounds: true, hasComplexTransform: false }
+    )
+
+    // Create optimized stroke with reduced points
+    const optimizedStroke = {
+      ...stroke,
+      points: result.nodes.map(node => ({
+        x: node.position.x,
+        y: node.position.y,
+        pressure: node.pressureFactor,
+        time: node.thisNode.time
+      })),
+      bounds: result.bounds,
+      _originalPointCount: stroke.points.length,
+      _optimizedPointCount: result.nodes.length,
+      _compressionRatio: stroke.points.length / result.nodes.length
+    }
+
+    return optimizedStroke
+  }
+
+  /**
+   * ISF Serialization Support
+   */
+
+  /**
+   * Serialize a stroke to ISF format
+   */
+  serializeStroke(stroke, options = {}) {
+    return ISFStrokeSerializer.serialize(stroke, options)
+  }
+
+  /**
+   * Deserialize a stroke from ISF format
+   */
+  deserializeStroke(bytes) {
+    return ISFStrokeSerializer.deserialize(bytes)
+  }
+
+  /**
+   * Serialize all strokes to ISF format
+   */
+  serializeAllStrokes(options = {}) {
+    const serialized = []
+    const allStrokes = [...this.strokes]
+    if (this.currentStroke) {
+      allStrokes.push(this.currentStroke)
+    }
+
+    for (const stroke of allStrokes) {
+      const bytes = this.serializeStroke(stroke, options)
+      serialized.push(bytes)
+    }
+
+    // Combine all strokes with count header
+    const totalSize = serialized.reduce((sum, bytes) => sum + bytes.length, 0)
+    const result = new Uint8Array(4 + totalSize)
+    
+    // Write stroke count
+    new DataView(result.buffer).setUint32(0, serialized.length, true)
+    
+    // Write all strokes
+    let offset = 4
+    for (const bytes of serialized) {
+      result.set(bytes, offset)
+      offset += bytes.length
+    }
+
+    return result
+  }
+
+  /**
+   * Load strokes from ISF serialized data
+   */
+  loadFromISF(bytes) {
+    this.clear()
+    
+    // Read stroke count
+    const count = new DataView(bytes.buffer).getUint32(0, true)
+    let offset = 4
+
+    const loadedStrokes = []
+    
+    for (let i = 0; i < count; i++) {
+      // Read stroke length
+      const length = new DataView(bytes.buffer).getUint32(offset, true)
+      const strokeBytes = bytes.slice(offset, offset + length)
+      offset += length
+
+      const stroke = this.deserializeStroke(strokeBytes)
+      loadedStrokes.push(stroke)
+    }
+
+    // Add loaded strokes
+    for (const stroke of loadedStrokes) {
+      this.strokes.push({
+        ...stroke,
+        color: this.parseColor(stroke.color),
+        bounds: this.calculateBounds(stroke.points, stroke.width)
+      })
+    }
+
+    this.rebuildGPUData()
+    return loadedStrokes
+  }
+
+  /**
+   * Get compression statistics for current strokes
+   */
+  getCompressionStats() {
+    const allStrokes = [...this.strokes]
+    if (this.currentStroke) {
+      allStrokes.push(this.currentStroke)
+    }
+
+    const stats = {
+      strokeCount: allStrokes.length,
+      totalPoints: 0,
+      originalSize: 0,
+      compressedSize: 0,
+      compressionRatio: 0,
+      avgBytesPerPoint: 0,
+      perStrokeStats: []
+    }
+
+    for (const stroke of allStrokes) {
+      const strokeStats = ISFStrokeSerializer.getCompressionStats(stroke)
+      stats.totalPoints += strokeStats.pointCount
+      stats.originalSize += strokeStats.originalSize
+      stats.compressedSize += strokeStats.compressedSize
+      stats.perStrokeStats.push(strokeStats)
+    }
+
+    stats.compressionRatio = stats.originalSize / stats.compressedSize
+    stats.avgBytesPerPoint = stats.compressedSize / stats.totalPoints
+
+    return stats
+  }
+
+  calculateBounds(points, width) {
+    if (!points || points.length === 0) return null
+
+    let bounds = null
+    for (const point of points) {
+      const radius = (width * (point.pressure || 1.0)) / 2
+      if (!bounds) {
+        bounds = {
+          minX: point.x - radius,
+          minY: point.y - radius,
+          maxX: point.x + radius,
+          maxY: point.y + radius
+        }
+      } else {
+        bounds.minX = Math.min(bounds.minX, point.x - radius)
+        bounds.minY = Math.min(bounds.minY, point.y - radius)
+        bounds.maxX = Math.max(bounds.maxX, point.x + radius)
+        bounds.maxY = Math.max(bounds.maxY, point.y + radius)
+      }
+    }
+    return bounds
   }
 }
