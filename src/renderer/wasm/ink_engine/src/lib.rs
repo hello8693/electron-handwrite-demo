@@ -142,6 +142,7 @@ pub fn build_mesh(points: &[f32], widths: &[f32], color: &[f32]) -> Vec<f32> {
     vertices
 }
 
+
 fn circle_mesh(cx: f32, cy: f32, radius: f32, r: f32, g: f32, b: f32, a: f32) -> Vec<f32> {
     let mut vertices = Vec::new();
     let steps = 24;

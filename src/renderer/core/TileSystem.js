@@ -6,16 +6,25 @@
 export const TILE_SIZE = 256
 
 export class Tile {
-  constructor(x, y) {
+  constructor(x, y, dpr = 1) {
     this.x = x // Tile grid X coordinate
     this.y = y // Tile grid Y coordinate
+    this.dpr = dpr
     this.canvas = document.createElement('canvas')
-    this.canvas.width = TILE_SIZE
-    this.canvas.height = TILE_SIZE
+    this.canvas.width = Math.floor(TILE_SIZE * this.dpr)
+    this.canvas.height = Math.floor(TILE_SIZE * this.dpr)
     this.ctx = this.canvas.getContext('2d', { willReadFrequently: false })
     this.dirty = false
     this.strokes = [] // Stroke IDs that affect this tile
     this.eraseStrokes = [] // Erase stroke IDs affecting this tile
+  }
+
+  resizeDpr(dpr) {
+    if (this.dpr === dpr) return
+    this.dpr = dpr
+    this.canvas.width = Math.floor(TILE_SIZE * this.dpr)
+    this.canvas.height = Math.floor(TILE_SIZE * this.dpr)
+    this.dirty = true
   }
 
   clear() {
@@ -42,7 +51,9 @@ export class Tile {
   render(strokes, viewport, eraseStrokes) {
     if (!this.dirty) return
 
-    this.ctx.clearRect(0, 0, TILE_SIZE, TILE_SIZE)
+    this.ctx.setTransform(1, 0, 0, 1, 0, 0)
+    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
+    this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0)
     
     // Calculate tile world bounds
     const worldX = this.x * TILE_SIZE
@@ -54,27 +65,56 @@ export class Tile {
     for (const strokeId of this.strokes) {
       const stroke = strokes.get(strokeId)
       if (!stroke) continue
-      
-      this.ctx.beginPath()
+
       this.ctx.strokeStyle = stroke.color
-      this.ctx.lineWidth = stroke.width
+      this.ctx.fillStyle = stroke.color
       this.ctx.lineCap = 'round'
       this.ctx.lineJoin = 'round'
-      
-      let firstPoint = true
-      for (const point of stroke.points) {
-        const x = point.x - worldX
-        const y = point.y - worldY
-        
-        if (firstPoint) {
-          this.ctx.moveTo(x, y)
-          firstPoint = false
-        } else {
-          this.ctx.lineTo(x, y)
+
+      if (stroke.widths && stroke.widths.length === stroke.points.length) {
+        for (let i = 1; i < stroke.points.length; i++) {
+          const p0 = stroke.points[i - 1]
+          const p1 = stroke.points[i]
+          const w0 = stroke.widths[i - 1]
+          const w1 = stroke.widths[i]
+          const w = (w0 + w1) * 0.5
+
+          this.ctx.lineWidth = w
+          this.ctx.beginPath()
+          this.ctx.moveTo(p0.x - worldX, p0.y - worldY)
+          this.ctx.lineTo(p1.x - worldX, p1.y - worldY)
+          this.ctx.stroke()
+
+          this.ctx.beginPath()
+          this.ctx.arc(p1.x - worldX, p1.y - worldY, w1 * 0.5, 0, Math.PI * 2)
+          this.ctx.fill()
         }
+
+        if (stroke.points.length === 1) {
+          const p0 = stroke.points[0]
+          const w0 = stroke.widths[0]
+          this.ctx.beginPath()
+          this.ctx.arc(p0.x - worldX, p0.y - worldY, w0 * 0.5, 0, Math.PI * 2)
+          this.ctx.fill()
+        }
+      } else {
+        this.ctx.beginPath()
+        this.ctx.lineWidth = stroke.width
+        let firstPoint = true
+        for (const point of stroke.points) {
+          const x = point.x - worldX
+          const y = point.y - worldY
+          
+          if (firstPoint) {
+            this.ctx.moveTo(x, y)
+            firstPoint = false
+          } else {
+            this.ctx.lineTo(x, y)
+          }
+        }
+        
+        this.ctx.stroke()
       }
-      
-      this.ctx.stroke()
     }
 
     // Apply erase strokes (destination-out)
@@ -111,9 +151,16 @@ export class Tile {
 }
 
 export class TileManager {
-  constructor() {
+  constructor(dpr = 1) {
     this.tiles = new Map() // Key: "x,y", Value: Tile
     this.activeTiles = new Set() // Currently visible tiles
+    this.dpr = dpr
+  }
+
+  setDpr(dpr) {
+    if (this.dpr === dpr) return
+    this.dpr = dpr
+    this.tiles.forEach((tile) => tile.resizeDpr(dpr))
   }
 
   getTileKey(x, y) {
@@ -130,7 +177,7 @@ export class TileManager {
   getTile(tileX, tileY) {
     const key = this.getTileKey(tileX, tileY)
     if (!this.tiles.has(key)) {
-      this.tiles.set(key, new Tile(tileX, tileY))
+      this.tiles.set(key, new Tile(tileX, tileY, this.dpr))
     }
     return this.tiles.get(key)
   }

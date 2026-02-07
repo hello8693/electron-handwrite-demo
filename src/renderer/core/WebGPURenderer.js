@@ -285,7 +285,7 @@ export class WebGPURenderer {
       colorAttachments: [{
         view: msaaView, // Render to MSAA texture
         resolveTarget: textureView, // Resolve to canvas
-        clearValue: { r: 1, g: 1, b: 1, a: 1 },
+        clearValue: { r: 0, g: 0, b: 0, a: 0 },
         loadOp: 'clear',
         storeOp: 'store'
       }]

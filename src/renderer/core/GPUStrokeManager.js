@@ -15,6 +15,9 @@ export class GPUStrokeManager {
     this.gpuVertices = new Float32Array(0) // Triangulated mesh vertices
     this.spatialBuckets = new Map() // tile bucket index
     this.wasm = null
+    this.wasmWorker = null
+    this.strokeMeshes = new Map()
+    this.smoothingEnabled = true
 
     this.minWidthScale = 0.4
     this.maxWidthScale = 1.6
@@ -50,6 +53,15 @@ export class GPUStrokeManager {
   setWasmEngine(wasm) {
     this.wasm = wasm
   }
+
+  setWasmWorker(worker) {
+    this.wasmWorker = worker
+  }
+
+  setSmoothingEnabled(enabled) {
+    this.smoothingEnabled = !!enabled
+  }
+
 
   startStroke(x, y, color, width, pressure = 1.0, tilt = null, time = performance.now()) {
     this.currentStroke = {
@@ -87,29 +99,36 @@ export class GPUStrokeManager {
     const dx = x - last.x
     const dy = y - last.y
     const dist = Math.hypot(dx, dy)
-    const spacing = Math.max(0.35, this.currentStroke.width * this.resampleSpacing)
+    const spacing = this.smoothingEnabled
+      ? Math.max(0.35, this.currentStroke.width * this.resampleSpacing)
+      : Math.max(0.15, this.currentStroke.width * 0.15)
 
-    const dtRaw = Math.max(1, time - (last.time ?? time))
-    const speedRaw = dist / dtRaw
-    const t = this.smoothstep(this.speedLow, this.speedHigh, speedRaw)
-    let alpha = this.lerp(this.minSmoothing, this.maxSmoothing, t)
+    let fx = x
+    let fy = y
 
-    const prev = points[points.length - 2]
-    if (prev) {
-      const v1x = last.x - prev.x
-      const v1y = last.y - prev.y
-      const v2x = x - last.x
-      const v2y = y - last.y
-      const len1 = Math.hypot(v1x, v1y) || 1
-      const len2 = Math.hypot(v2x, v2y) || 1
-      const dot = (v1x * v2x + v1y * v2y) / (len1 * len2)
-      const curvature = 1 - Math.max(-1, Math.min(1, dot))
-      alpha = alpha * (1 - curvature * this.curvatureBoost)
+    if (this.smoothingEnabled) {
+      const dtRaw = Math.max(1, time - (last.time ?? time))
+      const speedRaw = dist / dtRaw
+      const t = this.smoothstep(this.speedLow, this.speedHigh, speedRaw)
+      let alpha = this.lerp(this.minSmoothing, this.maxSmoothing, t)
+
+      const prev = points[points.length - 2]
+      if (prev) {
+        const v1x = last.x - prev.x
+        const v1y = last.y - prev.y
+        const v2x = x - last.x
+        const v2y = y - last.y
+        const len1 = Math.hypot(v1x, v1y) || 1
+        const len2 = Math.hypot(v2x, v2y) || 1
+        const dot = (v1x * v2x + v1y * v2y) / (len1 * len2)
+        const curvature = 1 - Math.max(-1, Math.min(1, dot))
+        alpha = alpha * (1 - curvature * this.curvatureBoost)
+      }
+      const lastFiltered = this.currentStroke.lastFiltered || { x: last.x, y: last.y }
+      fx = this.lerp(lastFiltered.x, x, alpha)
+      fy = this.lerp(lastFiltered.y, y, alpha)
+      this.currentStroke.lastFiltered = { x: fx, y: fy }
     }
-    const lastFiltered = this.currentStroke.lastFiltered || { x: last.x, y: last.y }
-    const fx = this.lerp(lastFiltered.x, x, alpha)
-    const fy = this.lerp(lastFiltered.y, y, alpha)
-    this.currentStroke.lastFiltered = { x: fx, y: fy }
     const fdx = fx - last.x
     const fdy = fy - last.y
     const fdist = Math.hypot(fdx, fdy)
@@ -164,6 +183,8 @@ export class GPUStrokeManager {
     
     // Update GPU points cache
     this.updateGPUPoints()
+
+    this.requestMeshForStroke(finished)
     
     return finished
   }
@@ -301,6 +322,7 @@ export class GPUStrokeManager {
     this.currentStroke = null
     this.spatialBuckets.clear()
     this.gpuVertices = new Float32Array(0)
+    this.strokeMeshes.clear()
   }
 
   computePointWidth(stroke, index, baseWidth) {
@@ -327,6 +349,15 @@ export class GPUStrokeManager {
     const width = baseWidth * pressureScale * speedScale * headTaper * tailTaper
 
     return Math.max(baseWidth * this.widthMinScale, Math.min(baseWidth * this.widthMaxScale, width))
+  }
+
+  getStrokeWidths(stroke) {
+    if (!stroke) return []
+    const widths = new Array(stroke.points.length)
+    for (let i = 0; i < stroke.points.length; i++) {
+      widths[i] = this.computePointWidth(stroke, i, stroke.width)
+    }
+    return widths
   }
 
   buildMeshFromStroke(stroke) {
@@ -509,8 +540,16 @@ export class GPUStrokeManager {
         })
       }
 
-      const mesh = this.buildMeshForStroke(stroke)
-      this.gpuVertices = this.concatFloat32(this.gpuVertices, mesh)
+      const cached = this.strokeMeshes.get(stroke.id)
+      if (cached) {
+        this.gpuVertices = this.concatFloat32(this.gpuVertices, cached)
+      } else {
+        const mesh = this.buildMeshForStroke(stroke)
+        this.gpuVertices = this.concatFloat32(this.gpuVertices, mesh)
+        if (this.wasmWorker) {
+          this.requestMeshForStroke(stroke)
+        }
+      }
     }
   }
 
@@ -531,6 +570,8 @@ export class GPUStrokeManager {
 
   buildMeshForStroke(stroke) {
     if (!stroke || stroke.points.length === 0) return new Float32Array(0)
+    const cached = this.strokeMeshes.get(stroke.id)
+    if (cached) return cached
     if (this.wasm?.build_mesh) {
       const n = stroke.points.length
       const points = new Float32Array(n * 2)
@@ -546,6 +587,30 @@ export class GPUStrokeManager {
       return out instanceof Float32Array ? out : new Float32Array(out)
     }
     return this.buildMeshFromStroke(stroke)
+  }
+
+
+  requestMeshForStroke(stroke) {
+    if (!this.wasmWorker || !stroke) return
+    const n = stroke.points.length
+    if (n === 0) return
+    const points = new Float32Array(n * 2)
+    const widths = new Float32Array(n)
+    for (let i = 0; i < n; i++) {
+      const p = stroke.points[i]
+      points[i * 2] = p.x
+      points[i * 2 + 1] = p.y
+      widths[i] = this.computePointWidth(stroke, i, stroke.width)
+    }
+    const color = new Float32Array([stroke.color.r, stroke.color.g, stroke.color.b, stroke.color.a])
+
+    this.wasmWorker
+      .buildMesh(points, widths, color)
+      .then((mesh) => {
+        this.strokeMeshes.set(stroke.id, mesh)
+        this.updateGPUPoints()
+      })
+      .catch(() => {})
   }
 
   flattenVertices(vertices) {

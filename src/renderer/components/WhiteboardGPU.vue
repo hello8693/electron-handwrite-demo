@@ -95,6 +95,10 @@
             />
             <span class="value-display">{{ smoothness.toFixed(2) }}</span>
           </div>
+          <div class="popup-row toggle-row">
+            <label>Smooth On</label>
+            <input type="checkbox" v-model="smoothingEnabled" class="toggle-input" />
+          </div>
           <div class="popup-row">
             <label>Speed</label>
             <input 
@@ -262,7 +266,8 @@ import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { WebGPURenderer } from '../core/WebGPURenderer.js'
 import { GPUStrokeManager } from '../core/GPUStrokeManager.js'
 import { Viewport } from '../core/Viewport.js'
-import { loadInkWasm } from '../core/WasmInkEngine.js'
+import { loadInkWasm, createInkWorker } from '../core/WasmInkEngine.js'
+import { createTileBakeWorker } from '../core/TileBakeWorker.js'
 
 // Legacy imports for Canvas 2D fallback
 import { TileManager, TILE_SIZE } from '../core/TileSystem.js'
@@ -273,6 +278,7 @@ const staticCanvasRef = ref(null)
 const brushColor = ref('#1F1F1F')
 const brushWidth = ref(2)
 const smoothness = ref(0.2)
+const smoothingEnabled = ref(true)
 const speedLow = ref(0.2)
 const speedHigh = ref(1.6)
 const minSmooth = ref(0.12)
@@ -299,6 +305,8 @@ const supportsPointerEvents = typeof window !== 'undefined' && 'PointerEvent' in
 let canvas = null
 let webgpuRenderer = null
 let gpuStrokeManager = null
+let inkWorker = null
+let tileBakeWorker = null
 
 let staticCanvas = null
 let staticCtx = null
@@ -320,6 +328,9 @@ let isPanning = false
 let lastPanPos = null
 let animationId = null
 let dpr = 1
+let tileDpr = 1
+let zoomRebakeTimer = null
+let pendingTileDpr = null
 
 // FPS tracking
 let lastFrameTime = 0
@@ -339,6 +350,13 @@ watch(smoothness, (value) => {
     gpuStrokeManager.setSmoothing({ spacingFactor: value })
   }
 })
+
+watch(smoothingEnabled, (value) => {
+  if (gpuStrokeManager) {
+    gpuStrokeManager.setSmoothingEnabled(value)
+  }
+})
+
 
 watch([speedLow, speedHigh, minSmooth, maxSmooth, minWidthScale, maxWidthScale, curvatureBoost], () => {
   if (gpuStrokeManager) {
@@ -393,6 +411,7 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener('resize', resizeCanvas)
   window.removeEventListener('click', handleClickOutside)
+  tileBakeWorker?.terminate()
   if (animationId) {
     cancelAnimationFrame(animationId)
   }
@@ -412,8 +431,13 @@ async function initializeRenderer() {
       if (wasm?.build_mesh) {
         gpuStrokeManager.setWasmEngine(wasm)
       }
+      inkWorker = createInkWorker()
+      if (inkWorker) {
+        gpuStrokeManager.setWasmWorker(inkWorker)
+      }
+      tileBakeWorker = createTileBakeWorker()
       staticCtx = staticCanvas.getContext('2d', { alpha: false })
-      staticTileManager = new TileManager()
+      staticTileManager = new TileManager(dpr)
       staticStrokes = new Map()
       eraseStrokeManager = new StrokeManager()
       eraseStrokes = new Map()
@@ -427,6 +451,7 @@ async function initializeRenderer() {
         maxWidthScale: maxWidthScale.value,
         curvatureBoost: curvatureBoost.value
       })
+      gpuStrokeManager.setSmoothingEnabled(smoothingEnabled.value)
       isWebGPU.value = true
       webgpuSupported.value = true
       console.log('✅ WebGPU renderer initialized')
@@ -454,7 +479,7 @@ function initializeCanvas2D() {
   ctx = canvas.getContext('2d', { alpha: false })
   liveCanvas = document.createElement('canvas')
   liveCtx = liveCanvas.getContext('2d', { willReadFrequently: false })
-  tileManager = new TileManager()
+  tileManager = new TileManager(dpr)
   strokeManager = new StrokeManager()
   eraseStrokeManager = new StrokeManager()
   eraseStrokes = new Map()
@@ -482,6 +507,7 @@ async function switchRenderer() {
 function resizeCanvas() {
   console.log('[Whiteboard] resizeCanvas', { w: window.innerWidth, h: window.innerHeight })
   dpr = window.devicePixelRatio || 1
+  tileDpr = dpr
   canvas.width = Math.floor(window.innerWidth * dpr)
   canvas.height = Math.floor(window.innerHeight * dpr)
 
@@ -498,6 +524,9 @@ function resizeCanvas() {
   if (webgpuRenderer) {
     webgpuRenderer.resize(canvas.width, canvas.height)
   }
+
+  staticTileManager?.setDpr(tileDpr)
+  tileManager?.setDpr(tileDpr)
   
   viewport.resize(window.innerWidth, window.innerHeight)
 }
@@ -516,12 +545,9 @@ function render() {
   if (isWebGPU.value && webgpuRenderer) {
     renderStaticTiles()
     // WebGPU rendering path
-    const gpuVertices = gpuStrokeManager.getAllGPUVertices()
+    const gpuVertices = gpuStrokeManager.getCurrentStrokeGPUVertices()
     pointCount.value = Math.floor(gpuVertices.length / 6)
-    
-    if (gpuVertices.length > 0) {
-      webgpuRenderer.render(gpuVertices, viewport)
-    }
+    webgpuRenderer.render(gpuVertices, viewport)
   } else if (ctx && tileManager) {
     // Canvas 2D rendering path (legacy)
     renderCanvas2D()
@@ -533,6 +559,10 @@ function render() {
 function renderCanvas2D() {
   // Clear main canvas
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  ctx.imageSmoothingEnabled = viewport.scale <= 1.1
+  if (ctx.imageSmoothingEnabled) {
+    ctx.imageSmoothingQuality = 'high'
+  }
   ctx.fillStyle = '#ffffff'
   ctx.fillRect(0, 0, canvas.width / dpr, canvas.height / dpr)
   
@@ -552,8 +582,10 @@ function renderCanvas2D() {
   for (const tile of visibleTiles) {
     const worldX = tile.x * TILE_SIZE
     const worldY = tile.y * TILE_SIZE
-    ctx.drawImage(tile.canvas, worldX, worldY)
+    ctx.drawImage(tile.canvas, worldX, worldY, TILE_SIZE, TILE_SIZE)
   }
+
+  renderActiveErasers(ctx)
   
   // Render live layer
   liveCtx.setTransform(dpr, 0, 0, dpr, 0, 0)
@@ -591,6 +623,10 @@ function renderStaticTiles() {
   if (!staticCtx || !staticTileManager || !staticStrokes) return
 
   staticCtx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  staticCtx.imageSmoothingEnabled = viewport.scale <= 1.1
+  if (staticCtx.imageSmoothingEnabled) {
+    staticCtx.imageSmoothingQuality = 'high'
+  }
   staticCtx.fillStyle = '#ffffff'
   staticCtx.fillRect(0, 0, staticCanvas.width / dpr, staticCanvas.height / dpr)
 
@@ -602,8 +638,10 @@ function renderStaticTiles() {
   for (const tile of visibleTiles) {
     const worldX = tile.x * TILE_SIZE
     const worldY = tile.y * TILE_SIZE
-    staticCtx.drawImage(tile.canvas, worldX, worldY)
+    staticCtx.drawImage(tile.canvas, worldX, worldY, TILE_SIZE, TILE_SIZE)
   }
+
+  renderActiveErasers(staticCtx)
 
   staticCtx.restore()
 }
@@ -641,11 +679,15 @@ function onPointerDown(event) {
   // Non-mouse inputs use primary contact, while mouse inputs require the left button.
   const shouldInitiateDrawing = event.pointerType === 'mouse' ? event.button === 0 : event.isPrimary
   
-  const pressure = event.pressure || 1.0
+  const pressure = event.pressure || 0.0
   const tilt = event.tiltX != null || event.tiltY != null ? { x: event.tiltX, y: event.tiltY } : null
   const time = event.timeStamp || performance.now()
 
   if (!shouldInitiateDrawing) return
+  if (event.pointerType !== 'mouse') {
+    const buttons = event.buttons ?? 0
+    if (buttons === 0 && pressure <= 0) return
+  }
 
   if (currentTool.value === 'pen') {
     const worldPos = viewport.screenToWorld(event.clientX, event.clientY)
@@ -712,8 +754,10 @@ function onPointerMove(event) {
 
   if (!pointerData || !pointerData.stroke) {
     const buttons = event.buttons ?? 0
-    const isPressed = event.pointerType === 'mouse' ? (buttons & 1) === 1 : true
-    const canStartOnMove = !isLocked.value && currentTool.value === 'pen' && isPressed
+    const isPressed = event.pointerType === 'mouse'
+      ? (buttons & 1) === 1
+      : (buttons > 0 || (event.pressure ?? 0) > 0)
+    const canStartOnMove = !isLocked.value && isPressed
 
     console.log('[Whiteboard] pointermove missing pointerData', {
       pointerId,
@@ -726,7 +770,7 @@ function onPointerMove(event) {
     if (canStartOnMove && currentTool.value === 'pen') {
       const worldPos = viewport.screenToWorld(event.clientX, event.clientY)
       console.log('[Whiteboard] startStroke (move fallback)', { worldPos, isWebGPU: isWebGPU.value })
-      const pressure = event.pressure || 1.0
+      const pressure = event.pressure || 0.0
       const tilt = event.tiltX != null || event.tiltY != null ? { x: event.tiltX, y: event.tiltY } : null
       const time = event.timeStamp || performance.now()
 
@@ -753,13 +797,26 @@ function onPointerMove(event) {
       }
 
       pointerData = activePointers.get(pointerId)
+    } else if (canStartOnMove && currentTool.value === 'eraser') {
+      const worldPos = viewport.screenToWorld(event.clientX, event.clientY)
+      const time = event.timeStamp || performance.now()
+      const eraseWidth = Math.max(8, brushWidth.value * 2.5)
+      const stroke = eraseStrokeManager.startStroke(
+        worldPos.x,
+        worldPos.y,
+        '#000000',
+        eraseWidth,
+        time
+      )
+      activePointers.set(pointerId, { stroke, isEraser: true })
+      pointerData = activePointers.get(pointerId)
     } else {
       return
     }
   }
   
   const worldPos = viewport.screenToWorld(event.clientX, event.clientY)
-  const pressure = event.pressure || 1.0
+  const pressure = event.pressure || 0.0
   const tilt = event.tiltX != null || event.tiltY != null ? { x: event.tiltX, y: event.tiltY } : null
   const time = event.timeStamp || performance.now()
   
@@ -817,10 +874,12 @@ function onPointerUp(event) {
     if (isWebGPU.value) {
       const finished = gpuStrokeManager.finishStroke()
       if (finished && staticTileManager && staticStrokes) {
+        const widths = gpuStrokeManager.getStrokeWidths(finished)
         const bakedStroke = {
           id: `gpu_${finished.id}`,
           color: rgbaFromColor(finished.color),
           width: finished.width,
+          widths,
           points: finished.points,
           bounds: finished.bounds
         }
@@ -922,6 +981,62 @@ function onWheel(event) {
   event.preventDefault()
   console.log('[Whiteboard] wheel', { deltaY: event.deltaY, x: event.clientX, y: event.clientY })
   viewport.zoom(event.deltaY, event.clientX, event.clientY)
+  updateTileDprForZoom(true)
+  scheduleZoomRebake()
+}
+
+function updateTileDprForZoom(defer = false) {
+  const zoomFactor = Math.min(2, Math.max(1, viewport.scale))
+  const next = dpr * zoomFactor
+  if (Math.abs(next - tileDpr) < 0.1) return
+  if (defer) {
+    pendingTileDpr = next
+    return
+  }
+  tileDpr = next
+  staticTileManager?.setDpr(tileDpr)
+  tileManager?.setDpr(tileDpr)
+}
+
+function scheduleZoomRebake() {
+  if (zoomRebakeTimer) {
+    clearTimeout(zoomRebakeTimer)
+  }
+  zoomRebakeTimer = setTimeout(() => {
+    if (pendingTileDpr != null) {
+      tileDpr = pendingTileDpr
+      pendingTileDpr = null
+      staticTileManager?.setDpr(tileDpr)
+      tileManager?.setDpr(tileDpr)
+    }
+    const tiles = staticTileManager?.getVisibleTiles(viewport) || []
+    if (tileBakeWorker && staticStrokes && tiles.length > 0) {
+      const strokeList = Array.from(staticStrokes.values())
+      const eraseList = eraseStrokes ? Array.from(eraseStrokes.values()) : []
+      tileBakeWorker
+        .rebake({
+          tiles: tiles.map((t) => ({ x: t.x, y: t.y })),
+          strokes: strokeList,
+          eraseStrokes: eraseList,
+          tileSize: TILE_SIZE,
+          dpr: tileDpr
+        })
+        .then((results) => {
+          results.forEach((entry) => {
+            const tile = staticTileManager.getTile(entry.x, entry.y)
+            tile.ctx.setTransform(1, 0, 0, 1, 0, 0)
+            tile.ctx.clearRect(0, 0, tile.canvas.width, tile.canvas.height)
+            tile.ctx.drawImage(entry.bitmap, 0, 0)
+            tile.dirty = false
+            entry.bitmap.close?.()
+          })
+        })
+        .catch(() => {})
+    } else {
+      staticTileManager?.renderTilesWithErase(staticStrokes, eraseStrokes, viewport)
+    }
+    tileManager?.renderTilesWithErase(strokeManager?.getAllStrokes?.(), eraseStrokes, viewport)
+  }, 160)
 }
 
 function clearCanvas() {
@@ -938,6 +1053,39 @@ function clearCanvas() {
   }
   activePointers.clear()
   pointCount.value = 0
+}
+
+function renderActiveErasers(targetCtx) {
+  if (!targetCtx) return
+  const erasers = [...activePointers.values()].filter((p) => p.isEraser && p.stroke)
+  if (erasers.length === 0) return
+
+  targetCtx.save()
+  targetCtx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  targetCtx.scale(viewport.scale, viewport.scale)
+  targetCtx.translate(-viewport.x, -viewport.y)
+  targetCtx.globalCompositeOperation = 'destination-out'
+  for (const entry of erasers) {
+    const stroke = entry.stroke
+    if (!stroke || stroke.points.length === 0) continue
+    targetCtx.beginPath()
+    targetCtx.lineWidth = stroke.width
+    targetCtx.lineCap = 'round'
+    targetCtx.lineJoin = 'round'
+    let first = true
+    for (const point of stroke.points) {
+      const x = point.x
+      const y = point.y
+      if (first) {
+        targetCtx.moveTo(x, y)
+        first = false
+      } else {
+        targetCtx.lineTo(x, y)
+      }
+    }
+    targetCtx.stroke()
+  }
+  targetCtx.restore()
 }
 
 function resetView() {
@@ -1232,6 +1380,16 @@ function loadPage(index) {
   min-width: 30px;
   text-align: right;
   font-weight: 500;
+}
+
+.toggle-row {
+  justify-content: space-between;
+}
+
+.toggle-input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--md-sys-color-primary);
 }
 
 .color-picker-wrapper {
