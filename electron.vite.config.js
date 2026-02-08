@@ -31,6 +31,14 @@ export default defineConfig({
         '@': resolve(__dirname, 'src/renderer')
       }
     },
-    plugins: [vue()]
+    plugins: [vue()],
+    worker: {
+      format: 'es',
+      rollupOptions: {
+        output: {
+          format: 'es'
+        }
+      }
+    }
   }
 })
