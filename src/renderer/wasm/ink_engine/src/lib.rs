@@ -1,7 +1,26 @@
 use wasm_bindgen::prelude::*;
 
+/// Brush tip type
+#[wasm_bindgen]
+pub enum BrushTip {
+    Ellipse = 0,
+    Rectangle = 1,
+}
+
 #[wasm_bindgen]
 pub fn build_mesh(points: &[f32], widths: &[f32], color: &[f32]) -> Vec<f32> {
+    build_mesh_with_brush(points, widths, color, BrushTip::Ellipse, 0.0)
+}
+
+/// Build mesh with brush shape support (ellipse or rectangle)
+#[wasm_bindgen]
+pub fn build_mesh_with_brush(
+    points: &[f32], 
+    widths: &[f32], 
+    color: &[f32],
+    brush_tip: BrushTip,
+    rotation: f32
+) -> Vec<f32> {
     let n = points.len() / 2;
     if n == 0 {
         return Vec::new();

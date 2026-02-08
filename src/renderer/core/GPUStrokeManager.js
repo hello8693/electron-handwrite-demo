@@ -9,9 +9,10 @@
  * - Pressure-aware rendering
  */
 
-import { TILE_SIZE } from './TileSystem.js'
 import { StrokeGeometryOptimizer } from './StrokeNode.js'
 import { ISFStrokeSerializer } from './ISFCodec.js'
+
+const TILE_SIZE = 512
 
 export class GPUStrokeManager {
   constructor() {

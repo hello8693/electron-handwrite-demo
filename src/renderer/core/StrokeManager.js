@@ -6,9 +6,10 @@
  * - Angle-based stroke optimization
  */
 
-import { TILE_SIZE } from './TileSystem.js'
 import { ISFStrokeSerializer } from './ISFCodec.js'
 import { StrokeGeometryOptimizer } from './StrokeNode.js'
+
+const TILE_SIZE = 512
 
 export class Stroke {
   constructor(id, color = '#000000', width = 2) {
